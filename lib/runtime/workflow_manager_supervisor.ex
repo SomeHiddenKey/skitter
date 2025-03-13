@@ -5,6 +5,8 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0
 
 defmodule Skitter.Runtime.WorkflowManagerSupervisor do
+  @snapshot_nodes Application.compile_env!(:word_count, :ackers)
+  @snapshot_replicas Application.compile_env!(:word_count, :replicas)
   @moduledoc false
   # Supervisor which supervises workflow managers.
 
@@ -18,6 +20,26 @@ defmodule Skitter.Runtime.WorkflowManagerSupervisor do
 
   def add_manager(ref) do
     DynamicSupervisor.start_child(__MODULE__, {WorkflowManager, ref})
+  end
+
+  def add_backup_server(workflow) do
+    if @snapshot_replicas > @snapshot_nodes, do: raise "replica count can't be higher than node count"
+
+    children = 0..(@snapshot_nodes - 1) |> Enum.map(fn i ->  Supervisor.child_spec({
+      FailureBackupNode, 
+      name: :"#{FailureBackupNode}.#{i}",
+      nodes: workflow |> Map.get(:nodes) |> MapSet.new(&elem(0))
+    }, id: {FailureBackupNode, i}) end)
+
+    obs = Supervisor.child_spec({
+      FailureObs, 
+      name: :"#{FailureObs}",
+      workflow: workflow
+    }, id: FailureObs)
+
+    {:ok, supervisor_pid} = DynamicSupervisor.start_link(children++[obs], strategy: :one_for_one)
+    dbg :ok #
+    {:ok, supervisor_pid}
   end
 
   def spawned_workflow_references do

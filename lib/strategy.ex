@@ -56,6 +56,7 @@ defmodule Skitter.Strategy do
           operation: Operation.t(),
           strategy: t(),
           deployment: deployment() | nil,
+          _epoch: number() | nil,
           _skr: any()
         }
 

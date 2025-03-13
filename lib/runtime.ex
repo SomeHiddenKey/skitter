@@ -101,7 +101,18 @@ defmodule Skitter.Runtime do
   module.
   """
   @spec deploy(Workflow.t()) :: ref()
-  def deploy(workflow) do
+  def deploy(workflow), do: deploy(workflow, :deploy)
+
+  @spec redeploy(Workflow.t(), map()) :: ref()
+  def redeploy(workflow, backup_refs) do 
+    new_workflow = Map.update!(workflow, :nodes, fn nodes -> 
+      Map.merge(nodes, backup_refs, fn _k, node, b_ref -> %{node | args: b_ref} end)
+    end)
+    deploy(new_workflow, :redeploy)
+  end
+
+  
+  defp deploy(workflow, tag) do
     ref = make_ref()
     nodes = Workflow.flatten(workflow).nodes
 
@@ -113,11 +124,12 @@ defmodule Skitter.Runtime do
     Remote.on_all_workers(WorkflowWorkerSupervisor, :spawn_local_workflow, [ref, map_size(nodes)])
 
     # Store deployment information and links on all nodes
-    deploy_nodes(nodes, ref)
+    deploy_nodes(nodes, ref, tag)
     expand_links(nodes, ref)
 
     # Create manager
     WorkflowManagerSupervisor.add_manager(ref)
+    WorkflowManagerSupervisor.add_backup_server(workflow)
     notify_workers(nodes, ref)
 
     Telemetry.emit([:runtime, :deploy], %{}, %{ref: ref})
@@ -125,18 +137,21 @@ defmodule Skitter.Runtime do
   end
 
   # Deploy all nodes
-  defp deploy_nodes(nodes, ref) do
+  defp deploy_nodes(nodes, ref, tag) do
     nodes
     |> Enum.with_index()
     |> Enum.map(fn {{_, node}, i} ->
       context = %Strategy.Context{
         operation: node.operation,
         strategy: node.strategy,
-        _skr: {:deploy, ref, i}
+        _skr: {tag, ref, i}
       }
 
       Telemetry.wrap [:hook, :deploy], %{context: context} do
-        node.strategy.deploy(context, node.args)
+        case tag do
+          :deploy -> node.strategy.deploy(context, node.args)
+          :redeploy -> node.strategy.redeploy(context, node.args)
+        end
       end
     end)
     |> NodeStore.put_everywhere(:deployment, ref)
