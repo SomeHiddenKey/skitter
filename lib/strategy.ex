@@ -119,15 +119,12 @@ defmodule Skitter.Strategy do
 
       in_roles = Map.get(graph,{:in},[])
       out = Enum.filter(inv_graph, fn {_k, %__MODULE__.Node{out: out}} -> {:out} in out end)
-      Enum.reduce(graph, 0, fn 
-        {_, {_,out,len,_}}, acc -> if ({:out} in out), do: acc + len, else: acc
-      end)
 
       %__MODULE__{
         in: in_roles,
         in_count: length(in_roles),
         out: Enum.map(out, &elem(&1, 0)),
-        out_count: Enum.reduce(graph, 0, fn {_k, node}, acc -> acc + node.pids_len end),
+        out_count: Enum.reduce(out, 0, fn {_k, node}, acc -> acc + node.pids_len end),
         nodes: inv_graph
       } 
     end
