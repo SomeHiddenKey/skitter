@@ -9,6 +9,7 @@ defmodule Skitter.Runtime.Emit do
   alias Skitter.Runtime.NodeStore
   alias Skitter.Strategy.Context
   alias Skitter.Token
+  alias Skitter.Runtime.Worker
 
   require NodeStore
   use Skitter.Telemetry
@@ -20,23 +21,35 @@ defmodule Skitter.Runtime.Emit do
   def emit(ctx = %Context{_skr: {ref, idx}}, emit) do
     Telemetry.emit([:runtime, :emit], %{}, %{context: ctx, emit: emit})
     node_links = NodeStore.get(:links, ref, idx)
-    Enum.each(emit, fn {out_port, enum} -> enum(enum, Map.fetch(node_links, out_port)) end)
+    Enum.each(emit, fn {out_port, enum} -> enum(ctx, enum, Map.fetch(node_links, out_port), &token/3) end)
   end
 
-  defp enum(_, :error), do: :ok
-  defp enum(_, {:ok, []}), do: :ok
-  defp enum(lst, {:ok, dsts}) when is_list(lst), do: Enum.each(lst, &token(dsts, &1))
-  defp enum(enum, {:ok, dsts}), do: Stream.each(enum, &token(dsts, &1)) |> Stream.run()
+  def emit_epoch(ctx = %Context{_skr: {ref, idx}, operation: operation}, {e, c}) do
+    emit = operation |> Skitter.Operation.out_ports() |> Enum.map(&{&1, {&1, e, c}})
+    node_links = NodeStore.get(:links, ref, idx)
+    Enum.each(emit, fn {out_port, enum} -> enum(ctx, enum, Map.fetch(node_links, out_port), &epoch/3) end)
+  end
 
-  defp token(dsts, tkn = %Token{}) do
+  defp enum(_, _, :error, _), do: :ok
+  defp enum(_, _, {:ok, []}, _), do: :ok
+  defp enum(ctx, lst, {:ok, dsts}, f) when is_list(lst), do: Enum.each(lst, &f.(ctx, dsts, &1))
+  defp enum(ctx, enum, {:ok, dsts}, f), do: Stream.each(enum, &f.(ctx, dsts, &1)) |> Stream.run()
+
+  defp token(outer_ctx, dsts, tkn = %Token{}) do
     Enum.each(dsts, fn {ctx, prt} ->
       tkn = %{tkn | port: prt}
 
       Telemetry.wrap [:hook, :deliver], %{pid: self(), context: ctx, token: tkn} do
-        ctx.strategy.deliver(ctx, tkn)
+        ctx.strategy.deliver(put_in(ctx._epoch, outer_ctx._epoch), tkn)
       end
     end)
   end
 
-  defp token(dsts, val), do: token(dsts, %Token{value: val})
+  defp token(ctx, dsts, val), do: token(ctx, dsts, %Token{value: val})
+
+  defp epoch(_, dsts, data) do
+    Enum.each(dsts, fn {ctx, _prt} ->
+      Worker.deliver_epoch(ctx, {:sk_epoch, data})
+    end)
+  end
 end

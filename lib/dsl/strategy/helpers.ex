@@ -88,14 +88,14 @@ defmodule Skitter.DSL.Strategy.Helpers do
   end
 
   @doc """
-  Send a message to a worker with `Skitter.Worker.send/2`
+  Send a message to a worker with `Skitter.Worker.send/3`
   """
   defmacro send(worker, message) do
-    quote(do: Skitter.Worker.send(unquote(worker), unquote(message)))
+    quote(do: Skitter.Worker.send(context(), unquote(worker), unquote(message)))
   end
 
   @doc """
-  Emit data for the current context.
+  Send data for the current context.
 
   Uses `Skitter.Strategy.Operation.emit/2`
   """

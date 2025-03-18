@@ -56,13 +56,80 @@ defmodule Skitter.Strategy do
           operation: Operation.t(),
           strategy: t(),
           deployment: deployment() | nil,
+          strategy_dag: dag() | nil,
           _epoch: number() | nil,
           _skr: any()
+        }
+
+  @type dag :: %__MODULE__.DAG{
+          in: [any()],
+          in_count: non_neg_integer(),
+          out: [any()],
+          out_count: non_neg_integer(),
+          nodes: map()
+        }
+
+  @type dag_node :: %__MODULE__.DAG.Node{
+          in: [any()],
+          out: [any()],
+          pids: [pid()],
+          pids_len: non_neg_integer()
         }
 
   defmodule Context do
     @moduledoc false
     @derive {Inspect, except: [:_skr, :deployment]}
-    defstruct [:operation, :strategy, :deployment, :_skr]
+    defstruct [:operation, :strategy, :deployment, :strategy_dag, :_epoch, :_skr]
+  end
+
+  defmodule DAG.Node do
+    @moduledoc false
+    defstruct [:in, :out, :pids, :pids_len]
+  end
+
+  defmodule DAG do
+    @moduledoc false
+    defstruct [:in, :in_count, :out, :out_count, :nodes]
+
+    defp in_roles(ctx, graph, role) do 
+      List.flatten(for {from,to} <- graph, Enum.member?(to, role), into: [] do
+        case from do
+          {:in} -> Skitter.Operation.in_ports(ctx.operation())
+          {:out} -> throw "Out role can't refer to back to another node: Breaks DAG" 
+          _ -> [{:inner, from}]
+        end
+      end)
+    end
+
+    defp to_node(ctx, graph, {role, pids}) do
+      %__MODULE__.Node{
+        in: in_roles(ctx, graph, role),
+        out: Map.get(graph,role,[]),
+        pids: pids,
+        pids_len: length(pids)
+      }
+    end
+
+    def build(ctx, graph, pid_context) do
+      dbg {graph, pid_context}
+
+      inv_graph = pid_context 
+        |> Enum.map(fn {role, pids} -> {role, to_node(ctx, graph, {role,pids})} end)
+        |> Map.new()
+
+      in_roles = Map.get(graph,{:in},[])
+      out = Enum.filter(inv_graph, fn {_k, %__MODULE__.Node{out: out}} -> {:out} in out end)
+      Enum.reduce(graph, 0, fn 
+        {_, {_,out,len,_}}, acc -> if ({:out} in out), do: acc + len, else: acc
+      end)
+
+      %__MODULE__{
+        in: in_roles,
+        in_count: length(in_roles),
+        out: Enum.map(out, &elem(&1, 0)),
+        out_count: Enum.reduce(graph, 0, fn {_k, node}, acc -> acc + node.pids_len end),
+        nodes: inv_graph
+      } 
+    end
   end
 end

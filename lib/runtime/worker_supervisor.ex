@@ -21,7 +21,7 @@ defmodule Skitter.Runtime.WorkerSupervisor do
   use DynamicSupervisor, restart: :transient
 
   alias Skitter.{Strategy, Worker}
-  alias Skitter.Runtime.NodeStore
+  alias Skitter.Runtime.{NodeStore, FailureObs}
 
   require NodeStore
 
@@ -41,11 +41,13 @@ defmodule Skitter.Runtime.WorkerSupervisor do
     {ref, idx} =
       case ctx._skr do
         {:deploy, ref, idx} -> {ref, idx}
+        {:redeploy, ref, idx} -> {ref, idx}
         {ref, idx} -> {ref, idx}
       end
 
     pid = NodeStore.get(:local_supervisors, ref, idx)
     {:ok, pid} = DynamicSupervisor.start_child(pid, {Skitter.Runtime.Worker, {ctx, state, role}})
+    FailureObs.put_worker_pid(ref, idx, role, pid)
     pid
   end
 

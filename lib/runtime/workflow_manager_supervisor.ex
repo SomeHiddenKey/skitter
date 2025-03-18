@@ -5,13 +5,17 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0
 
 defmodule Skitter.Runtime.WorkflowManagerSupervisor do
-  @snapshot_nodes Application.compile_env!(:word_count, :ackers)
-  @snapshot_replicas Application.compile_env!(:word_count, :replicas)
+  @snapshot_nodes Application.compile_env(:skitter, :ackers, 1)
+  @snapshot_replicas Application.compile_env(:skitter, :replicas, 1)
   @moduledoc false
   # Supervisor which supervises workflow managers.
 
   use DynamicSupervisor
-  alias Skitter.Runtime.WorkflowManager
+  alias Skitter.Runtime.{
+    WorkflowManager,
+    FailureBackupStore,
+    FailureObs
+  }
 
   def start_link(arg), do: DynamicSupervisor.start_link(__MODULE__, arg, name: __MODULE__)
 
@@ -22,24 +26,28 @@ defmodule Skitter.Runtime.WorkflowManagerSupervisor do
     DynamicSupervisor.start_child(__MODULE__, {WorkflowManager, ref})
   end
 
-  def add_backup_server(workflow) do
+  def add_backup_server(ref, nodes) do
     if @snapshot_replicas > @snapshot_nodes, do: raise "replica count can't be higher than node count"
 
     children = 0..(@snapshot_nodes - 1) |> Enum.map(fn i ->  Supervisor.child_spec({
-      FailureBackupNode, 
-      name: :"#{FailureBackupNode}.#{i}",
-      nodes: workflow |> Map.get(:nodes) |> MapSet.new(&elem(0))
-    }, id: {FailureBackupNode, i}) end)
+      FailureBackupStore, 
+      name: :"#{FailureBackupStore}.#{i}",
+      nodes: nodes |> MapSet.new(&elem(&1, 0))
+    }, id: {FailureBackupStore, i}) end)
 
     obs = Supervisor.child_spec({
       FailureObs, 
       name: :"#{FailureObs}",
-      workflow: workflow
+      deployment: ref
     }, id: FailureObs)
 
-    {:ok, supervisor_pid} = DynamicSupervisor.start_link(children++[obs], strategy: :one_for_one)
-    dbg :ok #
-    {:ok, supervisor_pid}
+    # {:ok, supervisor_pid} = DynamicSupervisor.start_link(__MODULE__, )
+    [obs|children] 
+      |> Enum.map(&DynamicSupervisor.start_child(__MODULE__, &1))
+      |> Enum.map(fn 
+        {:ok,pid} -> pid
+        {:error, err} -> raise err
+      end)
   end
 
   def spawned_workflow_references do

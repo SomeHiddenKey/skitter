@@ -59,7 +59,7 @@ defmodule Skitter.Token do
           meta: %{optional(atom()) => any()}
         }
   @enforce_keys [:value]
-  defstruct value: nil, port: nil, meta: %{}
+  defstruct value: nil, port: nil, epoch: 0, meta: %{}
 
   @doc """
   Extract the value from a token.

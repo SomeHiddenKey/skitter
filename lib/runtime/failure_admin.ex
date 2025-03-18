@@ -1,32 +1,44 @@
 use Skitter
 
-defmodule Skitter.Runtime.FailureBackupNode do
+defmodule Skitter.Runtime.FailureBackupStore do
   use GenServer
   require Logger
   require MapMacro
+  alias Skitter.Strategy.Context
   alias Skitter.Runtime, as: RT 
-  @snapshot_nodes Application.compile_env!(:word_count, :ackers)
-  @snapshot_replicas Application.compile_env!(:word_count, :replicas)
+  alias Skitter.Runtime.{
+    ConstantStore,
+    NodeStore
+  }
+  require Skitter.Runtime.{
+    ConstantStore,
+    NodeStore
+  }
+  @snapshot_nodes Application.compile_env(:skitter, :ackers, 1)
+  @snapshot_replicas Application.compile_env(:skitter, :replicas, 1)
 
   def start_link(arg) do
-    GenServer.start_link(__MODULE__, [arg[:workflow]], name: arg[:name])
+    GenServer.start_link(__MODULE__, [arg[:nodes]], name: arg[:name])
   end
 
-  def init([workflow]) do 
+  def init([nodes]) do 
+    dbg :STARTED
     { :ok, 
       { 0, # lowest epoch
         Map.new(), # backup states 
-        workflow |> Map.get(:nodes) |> MapSet.new(fn {k,_} -> k end), # set of ops without deployment info
+        nodes, # set of ops without deployment info
         %{1=>0}, # epoch => current snapshot revieved count
         0 # total expected counts for epoch 1
     }}
   end
 
   # use handle_continue() instead
-  def admin_cast(ids, msg) when is_list(ids), do: Enum.map(ids, &GenServer.cast({:"#{FailureAdmin}.#{&1}", Skitter.Remote.master()}, msg))
-  def admin_cast(pid, msg) when is_pid(pid), do: GenServer.cast(pid, msg)
-  def admin_cast(id, msg), do: GenServer.cast({:"#{FailureAdmin}.#{id}", Skitter.Remote.master()}, msg)
-  def admin_broadcast(msg), do: 0..(@snapshot_nodes - 1) |> Enum.map(fn id -> GenServer.cast({:"#{FailureAdmin}.#{id}", Skitter.Remote.master()}, msg) end)
+  def admin_cast(pid, msg), do: GenServer.cast(pid, msg)
+  def admin_cast(ctx, ids, msg) when is_list(ids), do: Enum.map(ids, &admin_cast(ctx, &1, msg))
+  def admin_cast(%Context{_skr: {ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_obs, ref, id), msg)
+  def admin_cast(%Context{_skr: {_, ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_obs, ref, id), msg)
+  def admin_cast(ref, id, msg), do: GenServer.cast(NodeStore.get(:failure_obs, ref, id), msg)
+  def admin_broadcast(ctx, msg), do: admin_cast(ctx, 0..(@snapshot_nodes - 1), msg)
   
   def node_snapshot(pid, role, context, 1, state) do
     id = Murmur.hash_x86_128(pid)
@@ -37,12 +49,11 @@ defmodule Skitter.Runtime.FailureBackupNode do
       |> Enum.each(fn node_id -> 
         if MapSet.member?(replica_ids, node_id)
         do
-          admin_cast(node_id, {:snapshot, pid, role, RT.node_name_for_context(context), 1, state, elem(context.deployment, 1)})
+          admin_cast(context, node_id, {:snapshot, pid, role, RT.node_name_for_context(context), 1, state, elem(context.deployment, 1)})
         else
-          admin_cast(node_id, {:snapshot, RT.node_name_for_context(context), 1, elem(context.deployment, 1)})
+          admin_cast(context, node_id, {:snapshot, RT.node_name_for_context(context), 1, elem(context.deployment, 1)})
         end
       end)
-
   end
 
   def node_snapshot(pid, role, context, epoch_tick, state) do
@@ -54,26 +65,22 @@ defmodule Skitter.Runtime.FailureBackupNode do
       |> Enum.each(fn node_id -> 
         if MapSet.member?(replica_ids, node_id)
         do 
-          admin_cast(node_id, {:snapshot, pid, role, RT.node_name_for_context(context), epoch_tick, state})
+          admin_cast(context, node_id, {:snapshot, pid, role, RT.node_name_for_context(context), epoch_tick, state})
         else 
-          admin_cast(node_id, {:snapshot, RT.node_name_for_context(context), epoch_tick}) 
+          admin_cast(context, node_id, {:snapshot, RT.node_name_for_context(context), epoch_tick}) 
         end
       end)
   end
-
-  def node_drop_epoch(epoch_tick), do: admin_broadcast({:drop_epoch, epoch_tick - 1})
   
-  def fetch_refs(fetcher), do: admin_broadcast({:fetch_refs, fetcher})
+  def fetch_refs(depl_ref, fetcher), do: admin_broadcast(depl_ref, {:fetch_refs, fetcher})
 
-  def dump(), do: admin_broadcast({:dump})
+  def dump(context), do: admin_broadcast(context, {:dump})
 
-  def fetch_backup({ref, admin_pid}, role, context), do: admin_cast(admin_pid, {:fetch_backup, ref, role, RT.node_name_for_context(context), self()})
+  def fetch_backup(context, {ref, admin_pid}, role), do: admin_cast(admin_pid, {:fetch_backup, ref, role, RT.node_name_for_context(context), self()})
 
   # count total PIDs
   def deployment_in_id(deployment) do
     Enum.reduce(deployment, 0, fn 
-      ({{:in}, _}, acc) -> acc
-      ({{:out}, _}, acc) -> acc
       ({_, {_,_,_,pids}}, acc) -> acc + (pids |> Enum.count)
     end)
   end
@@ -142,12 +149,12 @@ defmodule Skitter.Runtime.FailureBackupNode do
     end
   end
 
-  def update_undeployed_ops({operation_n, deployment}, {0, snapshot_dict, undeployed_ops, epoch_recv_count, epoch_max_count} = data) do 
+  def update_undeployed_ops({operation_n, deployment}, {0, snapshot_dict, undeployed_ops, epoch_recv_count, epoch_max_count}) do 
     if MapSet.member?(undeployed_ops, operation_n) do
       new_undeployed_ops = 
         MapSet.delete(undeployed_ops, operation_n)
       pid_count = 
-        FailureAdmin.deployment_in_id(deployment)
+        deployment_in_id(deployment)
       new_epoch_max_count = 
         epoch_max_count + pid_count
       new_epoch_recv_count = 
@@ -168,20 +175,20 @@ defmodule Skitter.Runtime.FailureBackupNode do
       new_undeployed_ops = 
         MapSet.delete(undeployed_ops, operation_n)
       pid_count = 
-        FailureAdmin.deployment_in_id(deployment)
+        deployment_in_id(deployment)
       new_epoch_max_count = 
         epoch_max_count + pid_count
       new_epoch_recv_count = 
         if pid_count==0, do: epoch_recv_count, else: Map.update(epoch_recv_count, epoch_tick, pid_count - 1, fn count -> count + pid_count - 1 end)
       new_snapshot_dict = 
-        FailureAdmin.add_backup(snapshot_dict, {pid, role, operation_n}, epoch_tick, snapshot_state)
+        add_backup(snapshot_dict, {pid, role, operation_n}, epoch_tick, snapshot_state)
       {0, new_snapshot_dict, new_undeployed_ops, new_epoch_recv_count, new_epoch_max_count}
 
     else
       new_epoch_recv_count = 
         Map.update(epoch_recv_count, epoch_tick, -1, fn count -> count - 1 end)
       new_snapshot_dict = 
-        FailureAdmin.add_backup(snapshot_dict, {pid, role, operation_n}, epoch_tick, snapshot_state)
+        add_backup(snapshot_dict, {pid, role, operation_n}, epoch_tick, snapshot_state)
 
       {0, new_snapshot_dict, undeployed_ops, new_epoch_recv_count, epoch_max_count}
     end
@@ -194,7 +201,7 @@ defmodule Skitter.Runtime.FailureBackupNode do
     new_epoch_recv_count = 
       Map.update(epoch_recv_count, epoch_tick, epoch_max_count - 1, fn count -> count - 1 end)
     new_snapshot_dict = 
-      FailureAdmin.add_backup(snapshot_dict, {pid, role, operation_n}, epoch_tick, snapshot_state)
+      add_backup(snapshot_dict, {pid, role, operation_n}, epoch_tick, snapshot_state)
 
     {lowest_epoch, new_snapshot_dict, new_epoch_recv_count, epoch_max_count}
   end
@@ -210,30 +217,30 @@ defmodule Skitter.Runtime.FailureBackupNode do
   end
 
   def handle_cast({:snapshot, pid, role, operation_n, 1, snapshot_state, deployment}, state) do
-    {:noreply, FailureAdmin.check_drop_epoch(
+    {:noreply, check_drop_epoch(
       1,
-      FailureAdmin.new_snapshot({pid, role, operation_n, 1, snapshot_state, deployment}, state)
+      new_snapshot({pid, role, operation_n, 1, snapshot_state, deployment}, state)
     )}
   end
 
   def handle_cast({:snapshot, operation_n, 1, deployment}, state) do
-    {:noreply, FailureAdmin.check_drop_epoch(
+    {:noreply, check_drop_epoch(
       1,
-      FailureAdmin.update_undeployed_ops({operation_n, deployment}, state)
+      update_undeployed_ops({operation_n, deployment}, state)
     )}
   end
 
   def handle_cast({:snapshot, pid, role, operation_n, epoch_tick, snapshot_state}, state) do
-    {:noreply, FailureAdmin.check_drop_epoch(
+    {:noreply, check_drop_epoch(
       epoch_tick,
-      FailureAdmin.new_snapshot({pid, role, operation_n, epoch_tick, snapshot_state}, state)
+      new_snapshot({pid, role, operation_n, epoch_tick, snapshot_state}, state)
     )}
   end
 
-  def handle_cast({:snapshot, operation_n, epoch}, state) do
-    {:noreply, FailureAdmin.check_drop_epoch(
+  def handle_cast({:snapshot, _operation_n, epoch}, state) do
+    {:noreply, check_drop_epoch(
       epoch,
-      FailureAdmin.update_counter(epoch, state)
+      update_counter(epoch, state)
     )}
   end
 
@@ -256,12 +263,12 @@ defmodule Skitter.Runtime.FailureBackupNode do
 
   def handle_cast(
     {:fetch_backup, ref, role, operation_n, fetcher}, 
-    {lowest_epoch, snapshot_dict, epoch_recv_count, epoch_max_count}
+    {lowest_epoch, snapshot_dict, _epoch_recv_count, epoch_max_count}
   ) do
     backup_value = MapMacro.get(snapshot_dict, [operation_n,role,ref]) 
       |> drop_while(lowest_epoch-1) 
       |> :queue.get()
-    Skitter.Runtime.Worker.send_backup(fetcher, backup_value)
+      RT.Worker.send_backup(fetcher, backup_value)
 
     new_snapshot_dict = MapMacro.update!(snapshot_dict, [operation_n, role], fn mp_role -> 
       {q, map} = Map.pop!(mp_role, ref)

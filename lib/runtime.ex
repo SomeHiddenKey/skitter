@@ -21,7 +21,8 @@ defmodule Skitter.Runtime do
     WorkflowManager,
     WorkerSupervisor,
     WorkflowWorkerSupervisor,
-    WorkflowManagerSupervisor
+    WorkflowManagerSupervisor,
+    FailureObs
   }
 
   use Skitter.Telemetry
@@ -101,20 +102,16 @@ defmodule Skitter.Runtime do
   module.
   """
   @spec deploy(Workflow.t()) :: ref()
-  def deploy(workflow), do: deploy(workflow, :deploy)
+  def deploy(workflow), do: deploy(Workflow.flatten(workflow).nodes, :deploy)
 
-  @spec redeploy(Workflow.t(), map()) :: ref()
-  def redeploy(workflow, backup_refs) do 
-    new_workflow = Map.update!(workflow, :nodes, fn nodes -> 
-      Map.merge(nodes, backup_refs, fn _k, node, b_ref -> %{node | args: b_ref} end)
-    end)
-    deploy(new_workflow, :redeploy)
+  def redeploy(nodes, backup_refs) do 
+    nodes = Map.merge(nodes, backup_refs, fn _k, node, b_ref -> %{node | args: b_ref} end)
+    deploy(nodes, :redeploy)
   end
 
   
-  defp deploy(workflow, tag) do
+  defp deploy(nodes, tag) do
     ref = make_ref()
-    nodes = Workflow.flatten(workflow).nodes
 
     # Store information to extract workflow information from the context
     ConstantStore.put_everywhere(nodes, :wf_nodes, ref)
@@ -123,14 +120,17 @@ defmodule Skitter.Runtime do
     # Create supervisors on all workers for every node in the workflow
     Remote.on_all_workers(WorkflowWorkerSupervisor, :spawn_local_workflow, [ref, map_size(nodes)])
 
+    [obs_pid|failure_nodes_pids] = WorkflowManagerSupervisor.add_backup_server(ref, nodes)
+    ConstantStore.put(obs_pid, :failure_obs, ref)
+    NodeStore.put_everywhere(failure_nodes_pids, :failure_nodes, ref)
+
     # Store deployment information and links on all nodes
     deploy_nodes(nodes, ref, tag)
     expand_links(nodes, ref)
-
+    
     # Create manager
     WorkflowManagerSupervisor.add_manager(ref)
-    WorkflowManagerSupervisor.add_backup_server(workflow)
-    notify_workers(nodes, ref)
+    FailureObs.notify_everywhere(ref)
 
     Telemetry.emit([:runtime, :deploy], %{}, %{ref: ref})
     ref
@@ -138,23 +138,29 @@ defmodule Skitter.Runtime do
 
   # Deploy all nodes
   defp deploy_nodes(nodes, ref, tag) do
-    nodes
+    ctx_nodes = nodes
     |> Enum.with_index()
     |> Enum.map(fn {{_, node}, i} ->
-      context = %Strategy.Context{
+      {node, %Strategy.Context{
         operation: node.operation,
         strategy: node.strategy,
         _skr: {tag, ref, i}
-      }
+      }} end)
 
+    ctx_nodes 
+    |> Enum.map(fn {node, context} -> 
       Telemetry.wrap [:hook, :deploy], %{context: context} do
         case tag do
           :deploy -> node.strategy.deploy(context, node.args)
           :redeploy -> node.strategy.redeploy(context, node.args)
         end
-      end
-    end)
+      end 
+    end) 
     |> NodeStore.put_everywhere(:deployment, ref)
+
+    ctx_nodes
+    |> Enum.map(fn {node, context} -> node.strategy.dag(context) end) 
+    |> NodeStore.put_everywhere(:dag, ref)
   end
 
   # Lookup link destinations and create contexts in advance to avoid doing this at runtime.
@@ -184,7 +190,7 @@ defmodule Skitter.Runtime do
   # We notify workers to finish deploying in reverse topological order of the application DAG.
   # This avoids race conditions where nodes can send data to other nodes which did not finish
   # deploying yet.
-  defp notify_workers(_, ref) do
+  def notify_workers(_, ref) do
     ref
     |> topological_indices()
     |> Enum.reverse()
@@ -230,6 +236,15 @@ defmodule Skitter.Runtime do
         :local_supervisors
       ]
       |> Enum.each(&ConstantStore.remove(&1, ref))
+    end)
+  end
+
+  def notify_workers(ref) do
+    ref
+    |> topological_indices()
+    |> Enum.reverse()
+    |> Enum.each(fn idx ->
+      Remote.on_all_workers(WorkerSupervisor, :all_children, [ref, idx, &Worker.deploy_complete/1])
     end)
   end
 

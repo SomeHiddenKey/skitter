@@ -101,15 +101,15 @@ defmodule Skitter.Worker do
   @doc """
   Send a message to the worker at `ref`.
   """
-  @spec send(ref(), any()) :: :ok
-  def send(worker, message) do
+  @spec send(Strategy.context(), ref(), any()) :: :ok
+  def send(%Strategy.Context{_epoch: epoch}, worker, message) do
     Telemetry.emit(
       [:worker, :send],
       %{},
       %{from: self(), to: worker, message: message}
     )
 
-    GenServer.cast(worker, {:sk_msg, message})
+    GenServer.cast(worker, {:sk_msg, message, epoch+1})
   end
 
   @doc """
