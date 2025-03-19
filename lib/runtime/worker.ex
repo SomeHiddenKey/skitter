@@ -105,11 +105,9 @@ defmodule Skitter.Runtime.Worker do
   def handle_cast({:sk_msg, msg, epoch}, srv), do: {:noreply, process_hook(msg, srv, epoch)}
 
   def handle_cast({:sk_epoch, msg}, {uninit_tag, msgs, srv}) do
-    dbg {uninit_tag, :sk_epoch, srv.role, msg}
     {:noreply, {uninit_tag, [{:sk_epoch, msg} | msgs], srv}}
   end
   def handle_cast({:sk_epoch, msg}, srv) do
-    dbg {:sk_epoch, srv.role, msg}
     {:noreply, process_epoch(msg, srv)} 
   end
 
@@ -126,10 +124,12 @@ defmodule Skitter.Runtime.Worker do
   end
 
   def handle_cast(:sk_start, srv) do 
-    {:noreply, [:start, :sk_emit_epoch, :play] |> Enum.reduce(srv, &elem(handle_info(&1, &2),1))}
+    {:noreply, [{:sk_msg, :start, 1}, :sk_emit_epoch, {:sk_msg, :play, 2}] |> Enum.reduce(srv, &elem(handle_cast(&1, &2), 1))}
   end
   
   def handle_cast(:sk_stop, state), do: {:stop, :normal, state}
+
+  def handle_cast(msg, state), do: handle_info(msg, state)
 
   def handle_info(:sk_emit_epoch, srv) do 
     srv = put_in(srv.epoch_metadata, %__MODULE__.EpochMetadata{})
@@ -139,9 +139,6 @@ defmodule Skitter.Runtime.Worker do
     Process.send_after(self(), :sk_emit_epoch, 2000)
     {:noreply, srv}
   end
-
-  @impl true
-  def handle_info(msg, srv), do: {:noreply, process_hook(msg, srv, 1)}
 
   defp srv_state(context, state, role, ref, idx) when is_function(state, 0) do
     srv_state(context, state.(), role, ref, idx)
@@ -167,7 +164,11 @@ defmodule Skitter.Runtime.Worker do
   end
 
   defp process_hook(msg, srv, epoch) when srv.context._epoch + 1 != epoch do 
-    update_in(srv.epoch_metadata.msg_queue, &:queue.in({:sk_msg, msg, epoch}, &1))
+    if Skitter.Operation.in_ports(srv.context.operation) == [] do
+      process_hook(msg, srv, epoch+1)
+    else 
+      update_in(srv.epoch_metadata.msg_queue, &:queue.in({:sk_msg, msg, epoch}, &1))
+    end
   end
 
   defp process_hook(msg, srv, _epoch) do
@@ -191,7 +192,8 @@ defmodule Skitter.Runtime.Worker do
       role: current_role
     } 
   ) do
-    graph_context = context.strategy_dag()
+    dbg {context._epoch, current_role}
+    graph_context = context.strategy_dag
     role_node = Map.get(graph_context.nodes, current_role).out
     role_node |> Enum.each(fn 
       {:out} ->  Emit.emit_epoch(context, {context._epoch, graph_context.out_count})
@@ -205,7 +207,7 @@ defmodule Skitter.Runtime.Worker do
       {_, epoch_tick, _} = data,
       srv
   ) when srv.epoch_metadata.epochs_recieved == %{} and srv.context._epoch + 1 == epoch_tick do
-    initialized_map = Map.get(srv.context.strategy_dag().nodes, srv.role).in |> Map.new(&{&1, 0})
+    initialized_map = Map.get(srv.context.strategy_dag.nodes, srv.role).in |> Map.new(&{&1, 0})
     process_epoch(data, %{srv | epoch_metadata: %{srv.epoch_metadata | epochs_recieved: initialized_map}})
   end
   
@@ -235,7 +237,7 @@ defmodule Skitter.Runtime.Worker do
     srv = put_in(srv.epoch_metadata, %__MODULE__.EpochMetadata{})
     FailureBackupStore.node_snapshot(self(), role, srv.context, state)
     pass_epoch(srv)
-    :queue.fold(&handle_cast(&1, &2), srv, epoch_metadata.msg_queue)
+    :queue.fold(&elem(handle_cast(&1, &2),1), srv, epoch_metadata.msg_queue)
   end
 
   # not all epochs recieved

@@ -25,7 +25,7 @@ defmodule Skitter.Runtime.Emit do
   end
 
   def emit_epoch(ctx = %Context{_skr: {ref, idx}, operation: operation}, {e, c}) do
-    emit = operation |> Skitter.Operation.out_ports() |> Enum.map(&{&1, [{&1, e, c}]})
+    emit = operation |> Skitter.Operation.out_ports() |> Enum.map(&{&1, [{e, c}]})
     node_links = NodeStore.get(:links, ref, idx)
     Enum.each(emit, fn {out_port, enum} -> enum(ctx, enum, Map.fetch(node_links, out_port), &epoch/3) end)
   end
@@ -47,9 +47,9 @@ defmodule Skitter.Runtime.Emit do
 
   defp token(ctx, dsts, val), do: token(ctx, dsts, %Token{value: val})
 
-  defp epoch(outer_ctx, dsts, data) do
-    Enum.each(dsts, fn {%Context{_skr: {ref, idx}}, _prt} ->
-      Worker.deliver_epoch(NodeStore.get(:dag, ref, idx) , data)
+  defp epoch(outer_ctx, dsts, {e, c}) do
+    Enum.each(dsts, fn {%Context{_skr: {ref, idx}}, prt} ->
+      Worker.deliver_epoch(NodeStore.get(:dag, ref, idx) , {prt, e, c})
     end)
   end
 end
