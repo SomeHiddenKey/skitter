@@ -110,10 +110,8 @@ defmodule Skitter.Strategy do
       }
     end
 
-    def build(ctx, graph, pid_context) do
-      dbg {graph, pid_context}
-
-      inv_graph = pid_context 
+    def build(ctx, graph, pid_ctx) do
+      inv_graph = pid_ctx 
         |> Enum.map(fn {role, pids} -> {role, to_node(ctx, graph, {role,pids})} end)
         |> Map.new()
 

@@ -144,6 +144,7 @@ defmodule Skitter.Runtime do
       {node, %Strategy.Context{
         operation: node.operation,
         strategy: node.strategy,
+        _epoch: 0,
         _skr: {tag, ref, i}
       }} end)
 
@@ -159,7 +160,7 @@ defmodule Skitter.Runtime do
     |> NodeStore.put_everywhere(:deployment, ref)
 
     ctx_nodes
-    |> Enum.map(fn {node, context} -> node.strategy.dag(context) end) 
+    |> Enum.map(fn {node, context} -> {context, node.strategy.dag(context)} end) 
     |> NodeStore.put_everywhere(:dag, ref)
   end
 
@@ -174,6 +175,7 @@ defmodule Skitter.Runtime do
            operation: node.operation,
            strategy: node.strategy,
            deployment: NodeStore.get(:deployment, ref, i),
+           _epoch: 0,
            _skr: {ref, i}
          }}
       end)

@@ -7,11 +7,9 @@ defmodule Skitter.Runtime.FailureBackupStore do
   alias Skitter.Strategy.Context
   alias Skitter.Runtime, as: RT 
   alias Skitter.Runtime.{
-    ConstantStore,
     NodeStore
   }
   require Skitter.Runtime.{
-    ConstantStore,
     NodeStore
   }
   @snapshot_nodes Application.compile_env(:skitter, :ackers, 1)
@@ -35,12 +33,12 @@ defmodule Skitter.Runtime.FailureBackupStore do
   # use handle_continue() instead
   def admin_cast(pid, msg), do: GenServer.cast(pid, msg)
   def admin_cast(ctx, ids, msg) when is_list(ids), do: Enum.map(ids, &admin_cast(ctx, &1, msg))
-  def admin_cast(%Context{_skr: {ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_obs, ref, id), msg)
-  def admin_cast(%Context{_skr: {_, ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_obs, ref, id), msg)
-  def admin_cast(ref, id, msg), do: GenServer.cast(NodeStore.get(:failure_obs, ref, id), msg)
+  def admin_cast(%Context{_skr: {ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
+  def admin_cast(%Context{_skr: {_, ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
+  def admin_cast(ref, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
   def admin_broadcast(ctx, msg), do: admin_cast(ctx, 0..(@snapshot_nodes - 1), msg)
   
-  def node_snapshot(pid, role, context, 1, state) do
+  def node_snapshot(pid, role, context, state) when context._epoch == 1 do
     id = Murmur.hash_x86_128(pid)
     replica_ids = 0..(@snapshot_replicas - 1) 
       |> Enum.map(fn r -> rem(id + r*div(@snapshot_nodes,@snapshot_replicas), @snapshot_nodes) end)
@@ -49,14 +47,14 @@ defmodule Skitter.Runtime.FailureBackupStore do
       |> Enum.each(fn node_id -> 
         if MapSet.member?(replica_ids, node_id)
         do
-          admin_cast(context, node_id, {:snapshot, pid, role, RT.node_name_for_context(context), 1, state, elem(context.deployment, 1)})
+          admin_cast(context, node_id, {:snapshot, pid, role, RT.node_name_for_context(context), 1, state, context.strategy_dag})
         else
-          admin_cast(context, node_id, {:snapshot, RT.node_name_for_context(context), 1, elem(context.deployment, 1)})
+          admin_cast(context, node_id, {:snapshot, RT.node_name_for_context(context), 1, context.strategy_dag})
         end
       end)
   end
 
-  def node_snapshot(pid, role, context, epoch_tick, state) do
+  def node_snapshot(pid, role, context, state) do
     id = Murmur.hash_x86_128(pid)
     replica_ids = 0..(@snapshot_replicas - 1) 
       |> Enum.map(fn r -> rem(id + r*div(@snapshot_nodes,@snapshot_replicas), @snapshot_nodes) end)
@@ -65,9 +63,9 @@ defmodule Skitter.Runtime.FailureBackupStore do
       |> Enum.each(fn node_id -> 
         if MapSet.member?(replica_ids, node_id)
         do 
-          admin_cast(context, node_id, {:snapshot, pid, role, RT.node_name_for_context(context), epoch_tick, state})
+          admin_cast(context, node_id, {:snapshot, pid, role, RT.node_name_for_context(context), context._epoch, state})
         else 
-          admin_cast(context, node_id, {:snapshot, RT.node_name_for_context(context), epoch_tick}) 
+          admin_cast(context, node_id, {:snapshot, RT.node_name_for_context(context), context._epoch}) 
         end
       end)
   end
@@ -79,9 +77,9 @@ defmodule Skitter.Runtime.FailureBackupStore do
   def fetch_backup(context, {ref, admin_pid}, role), do: admin_cast(admin_pid, {:fetch_backup, ref, role, RT.node_name_for_context(context), self()})
 
   # count total PIDs
-  def deployment_in_id(deployment) do
-    Enum.reduce(deployment, 0, fn 
-      ({_, {_,_,_,pids}}, acc) -> acc + (pids |> Enum.count)
+  def deployment_in_id(strategy_dag) do
+    Enum.reduce(strategy_dag.nodes, 0, fn 
+      {_k, node}, acc -> acc + (node.pids |> Enum.count)
     end)
   end
 

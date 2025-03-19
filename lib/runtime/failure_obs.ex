@@ -4,12 +4,12 @@ defmodule Skitter.Runtime.FailureObs do
   use GenServer
   require Logger
   alias Skitter.Mode.Master.WorkerConnection, as: MWC 
+  alias Skitter.Strategy
   alias Skitter.Runtime, as: RT 
   alias Skitter.Runtime.{
     ConstantStore,
     NodeStore,
-    FailureBackupStore,
-    WorkflowWorkerSupervisor
+    FailureBackupStore
   }
   require Skitter.Runtime.{
     ConstantStore,
@@ -31,7 +31,7 @@ defmodule Skitter.Runtime.FailureObs do
   def put_worker_pid(ref, idx, role, pid), do: GenServer.cast(ConstantStore.get(:failure_obs, ref), {:put_pid, idx, role, pid})
 
   def notify_everywhere(ref) do 
-    GenServer.cast(ConstantStore.get(:failure_obs, ref), {:put_pid_everywhere, ref})
+    GenServer.cast(ConstantStore.get(:failure_obs, ref), :put_pid_everywhere)
   end
   
   def handle_cast({:put_pid, idx, role, pid}, {:uninitialized, deployment_ref, pid_map}) do
@@ -39,11 +39,16 @@ defmodule Skitter.Runtime.FailureObs do
     {:noreply, {:uninitialized, deployment_ref, new_pid_map}}
   end
 
-  def handle_cast({:put_pid_everywhere, ref}, {:uninitialized, deployment_ref, pid_map}) do
+  def handle_cast(:put_pid_everywhere, {:uninitialized, ref, pid_map}) do
     pid_list = pid_map |> Map.to_list() |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1))
-    NodeStore.put_everywhere(pid_list, :pid_store, deployment_ref)
+
+    NodeStore.get_all(:dag, ref) 
+    |> Enum.zip(pid_list)
+    |> Enum.map(fn {{ctx, dag}, pid_ctx} -> Strategy.DAG.build(ctx, dag, pid_ctx) end) 
+    |> NodeStore.put_everywhere(:dag, ref)
+
     RT.notify_workers(ref)
-    {:noreply, deployment_ref}
+    {:noreply, ref}
   end
 
   def handle_info({:worker_down, worker}, deployment_ref) do
