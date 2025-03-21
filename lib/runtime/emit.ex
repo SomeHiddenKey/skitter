@@ -47,7 +47,7 @@ defmodule Skitter.Runtime.Emit do
 
   defp token(ctx, dsts, val), do: token(ctx, dsts, %Token{value: val})
 
-  defp epoch(outer_ctx, dsts, {e, c}) do
+  defp epoch(_outer_ctx, dsts, {e, c}) do
     Enum.each(dsts, fn {%Context{_skr: {ref, idx}}, prt} ->
       Worker.deliver_epoch(NodeStore.get(:dag, ref, idx) , {prt, e, c})
     end)

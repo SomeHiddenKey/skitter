@@ -5,6 +5,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 defmodule Skitter.DSL.Strategy.Helpers do
+  alias Skitter.Runtime.BackupStore.Reference
   @moduledoc """
   Macros to be used in strategy hooks.
 
@@ -57,6 +58,13 @@ defmodule Skitter.DSL.Strategy.Helpers do
   defmacro remote_worker(state, role, placement \\ nil) do
     quote do
       Skitter.Worker.create_remote(context(), unquote(state), unquote(role), unquote(placement))
+    end
+  end
+
+  defmacro redeploy_remote(refs, role, distributor \\ &Reference.round_robin/1) do
+    quote do
+      alias Skitter.Runtime.BackupStore.Reference
+      Skitter.Worker.redeploy_remote(context(), unquote(refs), unquote(role), unquote(distributor))
     end
   end
 

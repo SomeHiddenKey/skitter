@@ -1,6 +1,6 @@
 use Skitter
 
-defmodule Skitter.Runtime.FailureBackupStore do
+defmodule Skitter.Runtime.BackupStore do
   use GenServer
   require Logger
   require MapMacro
@@ -36,7 +36,7 @@ defmodule Skitter.Runtime.FailureBackupStore do
   def admin_cast(%Context{_skr: {ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
   def admin_cast(%Context{_skr: {_, ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
   def admin_cast(ref, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
-  def admin_broadcast(ctx, msg), do: admin_cast(ctx, 0..(@snapshot_nodes - 1), msg)
+  def admin_broadcast(ctx, msg), do: admin_cast(ctx, 0..(@snapshot_nodes - 1) |> Enum.to_list(), msg)
   
   def node_snapshot(pid, role, context, state) when context._epoch == 1 do
     id = Murmur.hash_x86_128(pid)
@@ -72,9 +72,9 @@ defmodule Skitter.Runtime.FailureBackupStore do
   
   def fetch_refs(depl_ref, fetcher), do: admin_broadcast(depl_ref, {:fetch_refs, fetcher})
 
-  def dump(context), do: admin_broadcast(context, {:dump})
+  def dump(depl_ref), do: admin_broadcast(depl_ref, {:dump})
 
-  def fetch_backup(context, {ref, admin_pid}, role), do: admin_cast(admin_pid, {:fetch_backup, ref, role, RT.node_name_for_context(context), self()})
+  def fetch_backup(context, %__MODULE__.Reference{worker_pid: ref, store_pid: store_pid}, role), do: admin_cast(store_pid, {:fetch_backup, ref, role, RT.node_name_for_context(context), self()})
 
   # count total PIDs
   def deployment_in_id(strategy_dag) do
@@ -134,7 +134,6 @@ defmodule Skitter.Runtime.FailureBackupStore do
   end
 
   def drop_epoch(snapshot_dict, epoch_tick) do
-    # dbg {snapshot_dict, epoch_tick}
     MapMacro.get_and_update(snapshot_dict, &drop_while(&1, epoch_tick - 1))
   end
 
@@ -246,16 +245,7 @@ defmodule Skitter.Runtime.FailureBackupStore do
     {:fetch_refs, fetcher}, 
     {_, snapshot_dict, _, _} = data
   ) do
-    backup_refs = snapshot_dict 
-      |> Map.to_list 
-      |> Enum.map(fn {k,x} -> {k, x 
-        |> Map.to_list 
-        |> Enum.map(fn {k,x} -> {k,  Map.new(x, &{elem(&1,0), self()})} end)
-        |> Map.new()
-      } end) 
-      |> Map.new()
-
-    send(fetcher, {:backup_ref, backup_refs})
+    send(fetcher, {:backup_ref, MapMacro.map(snapshot_dict, fn _ -> self() end)})
     {:noreply, data}
   end
 
@@ -263,10 +253,10 @@ defmodule Skitter.Runtime.FailureBackupStore do
     {:fetch_backup, ref, role, operation_n, fetcher}, 
     {lowest_epoch, snapshot_dict, _epoch_recv_count, epoch_max_count}
   ) do
-    backup_value = MapMacro.get(snapshot_dict, [operation_n,role,ref]) 
+    {_, backup_value} = MapMacro.get(snapshot_dict, [operation_n,role,ref]) 
       |> drop_while(lowest_epoch-1) 
       |> :queue.get()
-      RT.Worker.send_backup(fetcher, backup_value)
+      RT.Worker.send_backup(fetcher, {lowest_epoch, backup_value})
 
     new_snapshot_dict = MapMacro.update!(snapshot_dict, [operation_n, role], fn mp_role -> 
       {q, map} = Map.pop!(mp_role, ref)
@@ -280,7 +270,7 @@ defmodule Skitter.Runtime.FailureBackupStore do
     {:dump}, 
     {_, snapshot_dict, _, _} = data
   ) do
-    dbg snapshot_dict
+    dbg data
     {:noreply,data}
   end
 end

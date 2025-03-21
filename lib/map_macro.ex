@@ -39,8 +39,16 @@ defmodule MapMacro do
   end
 
   def map(input, fun) do 
+    map(input, -1, fun)
+  end
+
+  def map(input, 0, fun) do 
+    fun.(input)
+  end
+
+  def map(input, lvl, fun) do 
     if is_map(input) do
-      Map.new(input, fn {key, value} -> {key, MapMacro.map(value, fun)} end)
+      Map.new(input, fn {key, value} -> {key, MapMacro.map(value, lvl-1, fun)} end)
     else
       fun.(input)
     end

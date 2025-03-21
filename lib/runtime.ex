@@ -102,27 +102,36 @@ defmodule Skitter.Runtime do
   module.
   """
   @spec deploy(Workflow.t()) :: ref()
-  def deploy(workflow), do: deploy(Workflow.flatten(workflow).nodes, :deploy)
-
-  def redeploy(nodes, backup_refs) do 
-    nodes = Map.merge(nodes, backup_refs, fn _k, node, b_ref -> %{node | args: b_ref} end)
-    deploy(nodes, :redeploy)
+  def deploy(workflow) do 
+    nodes = Workflow.flatten(workflow).nodes
+    ref = new_ref(nodes)
+    deploy(ref, nodes, :deploy) 
   end
 
-  
-  defp deploy(nodes, tag) do
-    ref = make_ref()
+  def redeploy(nodes, deploy_ref) do 
+    deploy(deploy_ref, nodes, :deploy)
+  end
 
+  def redeploy(nodes, deploy_ref, backup_refs) do 
+    nodes = Map.merge(nodes, backup_refs, fn _k, node, b_ref -> %{node | args: b_ref} end)
+    deploy(deploy_ref, nodes, :redeploy)
+  end
+
+  defp new_ref(nodes) do
+    ref = make_ref()
+    [obs_pid|failure_nodes_pids] = WorkflowManagerSupervisor.add_backup_server(ref, nodes)
+    ConstantStore.put_everywhere(obs_pid, :failure_obs, ref)
+    NodeStore.put_everywhere(failure_nodes_pids, :failure_nodes, ref)
+    ref
+  end
+
+  defp deploy(ref, nodes, tag) do
     # Store information to extract workflow information from the context
     ConstantStore.put_everywhere(nodes, :wf_nodes, ref)
     nodes |> Map.keys() |> NodeStore.put_everywhere(:wf_node_names, ref)
 
     # Create supervisors on all workers for every node in the workflow
     Remote.on_all_workers(WorkflowWorkerSupervisor, :spawn_local_workflow, [ref, map_size(nodes)])
-
-    [obs_pid|failure_nodes_pids] = WorkflowManagerSupervisor.add_backup_server(ref, nodes)
-    ConstantStore.put(obs_pid, :failure_obs, ref)
-    NodeStore.put_everywhere(failure_nodes_pids, :failure_nodes, ref)
 
     # Store deployment information and links on all nodes
     deploy_nodes(nodes, ref, tag)
@@ -144,7 +153,7 @@ defmodule Skitter.Runtime do
       {node, %Strategy.Context{
         operation: node.operation,
         strategy: node.strategy,
-        _epoch: 0,
+        _epoch: nil,
         _skr: {tag, ref, i}
       }} end)
 
@@ -204,6 +213,12 @@ defmodule Skitter.Runtime do
   @doc "Stop the workflow with reference `ref`."
   @spec stop(ref()) :: :ok
   def stop(ref) do
+    stop_nonfailure_inst(ref)
+    remove_failure_constants(ref)
+    :ok
+  end
+
+  def stop_nonfailure_inst(ref) do
     Telemetry.emit([:runtime, :stop], %{}, %{ref: ref})
 
     WorkflowManager.stop(ref)
@@ -225,7 +240,7 @@ defmodule Skitter.Runtime do
   end
 
   defp remove_constants(ref) do
-    [:manager, :wf_nodes, :wf_node_names, :deployment, :links]
+    [:manager, :wf_nodes, :wf_node_names, :deployment, :links, :dag]
     |> Enum.each(&ConstantStore.remove(&1, ref))
 
     Remote.on_all_workers(fn ->
@@ -235,8 +250,19 @@ defmodule Skitter.Runtime do
         :operation_worker_supervisors,
         :deployment,
         :links,
-        :local_supervisors
+        :local_supervisors,
+        :dag
       ]
+      |> Enum.each(&ConstantStore.remove(&1, ref))
+    end)
+  end
+
+  defp remove_failure_constants(ref) do
+    [:failure_nodes, :failure_obs]
+    |> Enum.each(&ConstantStore.remove(&1, ref))
+
+    Remote.on_all_workers(fn ->
+      [:failure_nodes, :failure_obs]
       |> Enum.each(&ConstantStore.remove(&1, ref))
     end)
   end

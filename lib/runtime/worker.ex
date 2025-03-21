@@ -37,7 +37,7 @@ defmodule Skitter.Runtime.Worker do
   use Skitter.Telemetry
   alias Skitter.Runtime.{
     NodeStore,
-    FailureBackupStore,
+    BackupStore,
     Emit
   }
   require Skitter.Runtime.NodeStore
@@ -72,10 +72,15 @@ defmodule Skitter.Runtime.Worker do
     {:ok, {:uninitialized, [], srv_state(context, state, role, ref, idx)}}
   end
 
-  def init({context = %{_skr: {:redeploy, ref, idx}}, backup_ref, role}) do
+  def init({context = %{_skr: {:redeploy, ref, idx}}, %BackupStore.Reference{} = backup_ref, role}) do
     context = %{context | _skr: {ref, idx}}
-    FailureBackupStore.fetch_backup(context, backup_ref, role)
+    BackupStore.fetch_backup(context, backup_ref, role)
     {:ok, {:backup_wait, [], srv_state(context, nil, role, ref, idx)}}
+  end
+
+  def init({context = %{_skr: {:redeploy, ref, idx}}, state, role}) do
+    context = %{context | _skr: {ref, idx}}
+    {:ok, {:uninitialized, [], srv_state(context, state, role, ref, idx)}}
   end
 
   def init({context, state, role}) do
@@ -87,6 +92,10 @@ defmodule Skitter.Runtime.Worker do
   def handle_cast(:sk_deploy_complete, {:uninitialized, msgs, srv}) do
     srv = put_in(srv.context.deployment, NodeStore.get(:deployment, srv.ref, srv.idx))
     srv = put_in(srv.context.strategy_dag, NodeStore.get(:dag, srv.ref, srv.idx))
+    srv = update_in(srv.context._epoch, fn 
+      nil -> 0
+      e -> e
+    end)
 
     queue = if Skitter.Operation.in_ports(srv.context.operation) == [], do: [:sk_start|msgs], else: msgs 
     {:noreply, queue |> Enum.reverse() |> Enum.reduce(srv, &elem(handle_cast(&1, &2),1))}
@@ -119,12 +128,13 @@ defmodule Skitter.Runtime.Worker do
     srv = put_in(srv.state, state)
     srv = put_in(srv.epoch_metadata, %__MODULE__.EpochMetadata{})
     srv = put_in(srv.context._epoch, state_epoch)
-    queue = if Skitter.Operation.in_ports(srv.context.operation) == [], do: [{:sk_emit_epoch, state_epoch},{:sk_msg, :play, state_epoch}|msgs], else: msgs 
+    srv = put_in(srv.context.strategy_dag, NodeStore.get(:dag, srv.ref, srv.idx))
+    queue = if Skitter.Operation.in_ports(srv.context.operation) == [], do: [:sk_emit_epoch,{:sk_msg, :play, state_epoch}|msgs], else: msgs 
     {:noreply, queue |> Enum.reverse() |> Enum.reduce(srv, &elem(handle_cast(&1, &2),1))}
   end
 
   def handle_cast(:sk_start, srv) do 
-    {:noreply, [{:sk_msg, :start, 1}, :sk_emit_epoch, {:sk_msg, :play, 2}] |> Enum.reduce(srv, &elem(handle_cast(&1, &2), 1))}
+    {:noreply, [:sk_emit_epoch, {:sk_msg, :play, srv.context._epoch + 1}] |> Enum.reduce(srv, &elem(handle_cast(&1, &2), 1))}
   end
   
   def handle_cast(:sk_stop, state), do: {:stop, :normal, state}
@@ -134,7 +144,7 @@ defmodule Skitter.Runtime.Worker do
   def handle_info(:sk_emit_epoch, srv) do 
     srv = put_in(srv.epoch_metadata, %__MODULE__.EpochMetadata{})
     srv = update_in(srv.context._epoch, &(&1 + 1))
-    FailureBackupStore.node_snapshot(self(), srv.role, srv.context, srv.state)
+    BackupStore.node_snapshot(self(), srv.role, srv.context, srv.state)
     pass_epoch(srv)
     Process.send_after(self(), :sk_emit_epoch, 2000)
     {:noreply, srv}
@@ -192,7 +202,6 @@ defmodule Skitter.Runtime.Worker do
       role: current_role
     } 
   ) do
-    dbg {context._epoch, current_role}
     graph_context = context.strategy_dag
     role_node = Map.get(graph_context.nodes, current_role).out
     role_node |> Enum.each(fn 
@@ -227,6 +236,8 @@ defmodule Skitter.Runtime.Worker do
     check_epoch_map(%{srv | epoch_metadata: %{srv.epoch_metadata | epochs_recieved: new_epoch_map}})
   end
 
+  def process_epoch(msg, srv), do: update_in(srv.epoch_metadata.msg_queue, &:queue.in({:sk_epoch, msg}, &1))
+
   # all epochs recieved => take snapshot, pass epoch to next role/strategy and fold msg queue
   defp check_epoch_map(%Skitter.Runtime.Worker{
     state: state,
@@ -235,7 +246,7 @@ defmodule Skitter.Runtime.Worker do
   } = srv) when epoch_metadata.epochs_recieved == %{} do
     srv = update_in(srv.context._epoch, &(&1 + 1))
     srv = put_in(srv.epoch_metadata, %__MODULE__.EpochMetadata{})
-    FailureBackupStore.node_snapshot(self(), role, srv.context, state)
+    BackupStore.node_snapshot(self(), role, srv.context, state)
     pass_epoch(srv)
     :queue.fold(&elem(handle_cast(&1, &2),1), srv, epoch_metadata.msg_queue)
   end

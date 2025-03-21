@@ -24,6 +24,8 @@ defmodule Skitter.Worker do
   """
   alias Skitter.Strategy
   use Skitter.Telemetry
+  alias Skitter.Runtime.BackupStore.Reference
+  alias Skitter.Remote
 
   @typedoc """
   Reference to a created worker.
@@ -86,6 +88,12 @@ defmodule Skitter.Worker do
   @spec create_remote(Strategy.context(), state_or_state_fn(), role(), placement()) :: ref()
   def create_remote(context, state, role, placement \\ nil) do
     Skitter.Runtime.Spawner.spawn_remote(context, state, role, placement)
+  end
+
+  def redeploy_remote(context, refs, role, distributor \\ &Reference.round_robin/1) do
+    Enum.map(distributor.(refs[role]), fn {remote, refs} -> 
+      Remote.on(remote, Skitter.Runtime.Spawner, (if is_list(refs), do: :spawn_locals ,else: :spawn_local), [context, refs, role])
+    end) |> List.flatten
   end
 
   @doc """

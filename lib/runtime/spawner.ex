@@ -71,4 +71,11 @@ defmodule Skitter.Runtime.Spawner do
       _ -> Skitter.Runtime.WorkerSupervisor.add_worker(context, state, role)
     end
   end
+
+  def spawn_locals(context, states, role) do
+    case Runtime.mode() do
+      :master -> :error
+      _ -> Enum.map(states, &Skitter.Runtime.WorkerSupervisor.add_worker(context, &1, role))
+    end
+  end
 end

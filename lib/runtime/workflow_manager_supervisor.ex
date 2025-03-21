@@ -13,7 +13,7 @@ defmodule Skitter.Runtime.WorkflowManagerSupervisor do
   use DynamicSupervisor
   alias Skitter.Runtime.{
     WorkflowManager,
-    FailureBackupStore,
+    BackupStore,
     FailureObs
   }
 
@@ -30,10 +30,10 @@ defmodule Skitter.Runtime.WorkflowManagerSupervisor do
     if @snapshot_replicas > @snapshot_nodes, do: raise "replica count can't be higher than node count"
 
     children = 0..(@snapshot_nodes - 1) |> Enum.map(fn i ->  Supervisor.child_spec({
-      FailureBackupStore, 
-      name: :"#{FailureBackupStore}.#{i}",
+      BackupStore, 
+      name: :"#{BackupStore}.#{i}",
       nodes: nodes |> MapSet.new(&elem(&1, 0))
-    }, id: {FailureBackupStore, i}) end)
+    }, id: {BackupStore, i}) end)
 
     obs = Supervisor.child_spec({
       FailureObs, 
