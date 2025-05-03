@@ -40,6 +40,7 @@ defmodule Skitter.Runtime.Application do
     Supervisor.start_link(
       [
         {Task.Supervisor, name: Remote.TaskSupervisor},
+        Runtime.BackupStoreSupervisor,
         Runtime.WorkflowWorkerSupervisor,
         Runtime.WorkflowManagerSupervisor
       ],
@@ -52,6 +53,7 @@ defmodule Skitter.Runtime.Application do
     Supervisor.start_link(
       [
         Master.RemoteSupervisor,
+        Runtime.BackupStoreSupervisor,
         Runtime.WorkflowManagerSupervisor
       ],
       strategy: :one_for_one,
@@ -62,8 +64,9 @@ defmodule Skitter.Runtime.Application do
   defp start(:worker) do
     Supervisor.start_link(
       [
+        Runtime.BackupStoreSupervisor,
         Worker.RemoteSupervisor,
-        Runtime.WorkflowWorkerSupervisor
+        Runtime.WorkflowWorkerSupervisor,
       ],
       strategy: :one_for_one,
       name: __MODULE__

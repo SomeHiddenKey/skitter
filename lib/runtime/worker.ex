@@ -50,20 +50,26 @@ defmodule Skitter.Runtime.Worker do
 
   defmodule EpochMetadata do
     @enforce_keys []
-    defstruct epochs_recieved: %{}, msg_queue: :queue.new
+    defstruct epochs_recieved: %{}, msg_queue: :queue.new, make_checkpoint: nil, recover_checkpoint: nil
+
+    def new(srv) do 
+      %__MODULE__{
+        make_checkpoint: srv.epoch_metadata.make_checkpoint,
+        recover_checkpoint: srv.epoch_metadata.recover_checkpoint
+      }
+    end
   end
 
   defstruct [:operation, :strategy, :context, :idx, :ref, :state, :role, :epoch_metadata]
 
   def start_link(args), do: GenServer.start_link(__MODULE__, args)
   def deploy_complete(pid), do: GenServer.cast(pid, :sk_deploy_complete)
-  def send_epoch(pid, content), do: GenServer.cast(pid, {:sk_epoch, content})
   def send_backup(pid, content), do: GenServer.cast(pid, {:sk_backup, content})
   def deliver_epoch(graph_context, content) do 
     Enum.each(graph_context.in , fn 
       role -> Map.get(graph_context.nodes, role).pids
         |> Enum.each(&GenServer.cast(&1, {:sk_epoch, content}))
-  end)
+    end)
   end
 
   @impl true
@@ -121,13 +127,15 @@ defmodule Skitter.Runtime.Worker do
   end
 
   def handle_cast({:sk_backup, {state_epoch, state}}, {:backup_wait, msgs, srv}) do
-    {:noreply, {:uninitialized, msgs, %{srv | state: state, context: %{srv.context | _epoch: state_epoch}}}}
+    context = %{srv.context | _epoch: state_epoch}
+    state = srv.epoch_metadata.recover_checkpoint.(context, state, state_epoch)
+    {:noreply, {:uninitialized, msgs, %{srv | state: state, context: context}}}
   end
   def handle_cast({:sk_backup, {state_epoch, state}}, {:uninitialized, msgs, srv}) do
     srv = put_in(srv.context.deployment, NodeStore.get(:deployment, srv.ref, srv.idx))
-    srv = put_in(srv.state, state)
-    srv = put_in(srv.epoch_metadata, %__MODULE__.EpochMetadata{})
     srv = put_in(srv.context._epoch, state_epoch)
+    srv = put_in(srv.state, srv.epoch_metadata.recover_checkpoint.(srv.context, state, state_epoch))
+    srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
     srv = put_in(srv.context.strategy_dag, NodeStore.get(:dag, srv.ref, srv.idx))
     queue = if Skitter.Operation.in_ports(srv.context.operation) == [], do: [:sk_emit_epoch,{:sk_msg, :play, state_epoch}|msgs], else: msgs 
     {:noreply, queue |> Enum.reverse() |> Enum.reduce(srv, &elem(handle_cast(&1, &2),1))}
@@ -142,7 +150,7 @@ defmodule Skitter.Runtime.Worker do
   def handle_cast(msg, state), do: handle_info(msg, state)
 
   def handle_info(:sk_emit_epoch, srv) do 
-    srv = put_in(srv.epoch_metadata, %__MODULE__.EpochMetadata{})
+    srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
     srv = update_in(srv.context._epoch, &(&1 + 1))
     BackupStore.node_snapshot(self(), srv.role, srv.context, srv.state)
     pass_epoch(srv)
@@ -161,12 +169,19 @@ defmodule Skitter.Runtime.Worker do
       %{pid: self(), context: context, state: state, role: role}
     )
 
+    mod_info = context.strategy.__info__(:functions)
+    make_checkpoint = if Keyword.get(mod_info, :make_checkpoint) == 3, do: &context.strategy.make_checkpoint/3, else: fn (_ctx, state, _epoch) -> state end
+    recover_checkpoint = if Keyword.get(mod_info, :recover_checkpoint) == 3, do: &context.strategy.recover_checkpoint/3, else: fn (_ctx, state, _epoch) -> state end
+
     %__MODULE__{
       operation: context.operation,
       strategy: context.strategy,
       context: context,
       state: state,
-      epoch_metadata: %__MODULE__.EpochMetadata{},
+      epoch_metadata: %__MODULE__.EpochMetadata{
+        make_checkpoint: make_checkpoint,
+        recover_checkpoint: recover_checkpoint
+      },
       ref: ref,
       idx: idx,
       role: role
@@ -245,12 +260,12 @@ defmodule Skitter.Runtime.Worker do
     role: role
   } = srv) when epoch_metadata.epochs_recieved == %{} do
     srv = update_in(srv.context._epoch, &(&1 + 1))
-    srv = put_in(srv.epoch_metadata, %__MODULE__.EpochMetadata{})
-    BackupStore.node_snapshot(self(), role, srv.context, state)
+    srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
+    BackupStore.node_snapshot(self(), role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, state, srv.context._epoch))
     pass_epoch(srv)
     :queue.fold(&elem(handle_cast(&1, &2),1), srv, epoch_metadata.msg_queue)
   end
-
+ 
   # not all epochs recieved
   defp check_epoch_map(srv), do: srv
   

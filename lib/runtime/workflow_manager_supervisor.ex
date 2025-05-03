@@ -26,30 +26,6 @@ defmodule Skitter.Runtime.WorkflowManagerSupervisor do
     DynamicSupervisor.start_child(__MODULE__, {WorkflowManager, ref})
   end
 
-  def add_backup_server(ref, nodes) do
-    if @snapshot_replicas > @snapshot_nodes, do: raise "replica count can't be higher than node count"
-
-    children = 0..(@snapshot_nodes - 1) |> Enum.map(fn i ->  Supervisor.child_spec({
-      BackupStore, 
-      name: :"#{BackupStore}.#{i}",
-      nodes: nodes |> MapSet.new(&elem(&1, 0))
-    }, id: {BackupStore, i}) end)
-
-    obs = Supervisor.child_spec({
-      FailureObs, 
-      name: :"#{FailureObs}",
-      deployment: ref
-    }, id: FailureObs)
-
-    # {:ok, supervisor_pid} = DynamicSupervisor.start_link(__MODULE__, )
-    [obs|children] 
-      |> Enum.map(&DynamicSupervisor.start_child(__MODULE__, &1))
-      |> Enum.map(fn 
-        {:ok,pid} -> pid
-        {:error, err} -> raise err
-      end)
-  end
-
   def spawned_workflow_references do
     __MODULE__
     |> DynamicSupervisor.which_children()

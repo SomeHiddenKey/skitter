@@ -36,6 +36,7 @@ defmodule Skitter.Runtime.WorkflowManager do
 
   @impl true
   def handle_info({:worker_up, node, _}, ref) do
+    dbg "fuck"
     nodes = ConstantStore.get(:wf_nodes, ref)
     names = NodeStore.get_all(:wf_node_names, ref)
     links = NodeStore.get_all(:links, ref)

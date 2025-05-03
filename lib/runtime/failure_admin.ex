@@ -7,19 +7,19 @@ defmodule Skitter.Runtime.BackupStore do
   alias Skitter.Strategy.Context
   alias Skitter.Runtime, as: RT 
   alias Skitter.Runtime.{
-    NodeStore
+    NodeStore,
+    FailureObs
   }
-  require Skitter.Runtime.{
-    NodeStore
-  }
+  require NodeStore
   @snapshot_nodes Application.compile_env(:skitter, :ackers, 1)
   @snapshot_replicas Application.compile_env(:skitter, :replicas, 1)
 
   def start_link(arg) do
-    GenServer.start_link(__MODULE__, [arg[:nodes]], name: arg[:name])
+    GenServer.start_link(__MODULE__, arg)
   end
 
-  def init([nodes]) do 
+  def init({ref, nodes}) do 
+    FailureObs.put_store_pid(ref, self())
     dbg :STARTED
     { :ok, 
       { 0, # lowest epoch
@@ -33,9 +33,9 @@ defmodule Skitter.Runtime.BackupStore do
   # use handle_continue() instead
   def admin_cast(pid, msg), do: GenServer.cast(pid, msg)
   def admin_cast(ctx, ids, msg) when is_list(ids), do: Enum.map(ids, &admin_cast(ctx, &1, msg))
-  def admin_cast(%Context{_skr: {ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
-  def admin_cast(%Context{_skr: {_, ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
-  def admin_cast(ref, id, msg), do: GenServer.cast(NodeStore.get(:failure_nodes, ref, id), msg)
+  def admin_cast(%Context{_skr: {ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_stores, ref, id), msg)
+  def admin_cast(%Context{_skr: {_, ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_stores, ref, id), msg)
+  def admin_cast(ref, id, msg), do: GenServer.cast(NodeStore.get(:failure_stores, ref, id), msg)
   def admin_broadcast(ctx, msg), do: admin_cast(ctx, 0..(@snapshot_nodes - 1) |> Enum.to_list(), msg)
   
   def node_snapshot(pid, role, context, state) when context._epoch == 1 do
@@ -270,7 +270,7 @@ defmodule Skitter.Runtime.BackupStore do
     {:dump}, 
     {_, snapshot_dict, _, _} = data
   ) do
-    dbg data
+    dbg snapshot_dict
     {:noreply,data}
   end
 end

@@ -22,6 +22,7 @@ defmodule Skitter.Runtime do
     WorkerSupervisor,
     WorkflowWorkerSupervisor,
     WorkflowManagerSupervisor,
+    BackupStoreSupervisor,
     FailureObs
   }
 
@@ -104,8 +105,11 @@ defmodule Skitter.Runtime do
   @spec deploy(Workflow.t()) :: ref()
   def deploy(workflow) do 
     nodes = Workflow.flatten(workflow).nodes
-    ref = new_ref(nodes)
+    ref = make_ref()
+    Remote.on(Remote.master(), BackupStoreSupervisor, :spawn_obs, [ref])
+    Remote.on_all_workers(BackupStoreSupervisor, :spawn_store, [ref, MapSet.new(nodes, &elem(&1, 0))])
     deploy(ref, nodes, :deploy) 
+    ref
   end
 
   def redeploy(nodes, deploy_ref) do 
@@ -115,14 +119,6 @@ defmodule Skitter.Runtime do
   def redeploy(nodes, deploy_ref, backup_refs) do 
     nodes = Map.merge(nodes, backup_refs, fn _k, node, b_ref -> %{node | args: b_ref} end)
     deploy(deploy_ref, nodes, :redeploy)
-  end
-
-  defp new_ref(nodes) do
-    ref = make_ref()
-    [obs_pid|failure_nodes_pids] = WorkflowManagerSupervisor.add_backup_server(ref, nodes)
-    ConstantStore.put_everywhere(obs_pid, :failure_obs, ref)
-    NodeStore.put_everywhere(failure_nodes_pids, :failure_nodes, ref)
-    ref
   end
 
   defp deploy(ref, nodes, tag) do
@@ -258,11 +254,11 @@ defmodule Skitter.Runtime do
   end
 
   defp remove_failure_constants(ref) do
-    [:failure_nodes, :failure_obs]
+    [:failure_stores, :failure_obs]
     |> Enum.each(&ConstantStore.remove(&1, ref))
 
     Remote.on_all_workers(fn ->
-      [:failure_nodes, :failure_obs]
+      [:failure_stores, :failure_obs]
       |> Enum.each(&ConstantStore.remove(&1, ref))
     end)
   end

@@ -75,4 +75,10 @@ defmodule MapMacro do
       _k, v1, v2 -> Enum.random([v1, v2])
     end)
   end
+
+  def count(m) do
+    m 
+      |> Map.values() 
+      |> Enum.reduce(0, fn x, acc -> acc + (if is_map(x), do: count(x), else: 1) end) 
+  end
 end
