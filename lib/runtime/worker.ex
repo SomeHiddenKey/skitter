@@ -128,13 +128,13 @@ defmodule Skitter.Runtime.Worker do
 
   def handle_cast({:sk_backup, {state_epoch, state}}, {:backup_wait, msgs, srv}) do
     context = %{srv.context | _epoch: state_epoch}
-    state = srv.epoch_metadata.recover_checkpoint.(context, state, state_epoch)
+    state = srv.epoch_metadata.recover_checkpoint.(context, state, state_epoch, srv.role)
     {:noreply, {:uninitialized, msgs, %{srv | state: state, context: context}}}
   end
   def handle_cast({:sk_backup, {state_epoch, state}}, {:uninitialized, msgs, srv}) do
     srv = put_in(srv.context.deployment, NodeStore.get(:deployment, srv.ref, srv.idx))
     srv = put_in(srv.context._epoch, state_epoch)
-    srv = put_in(srv.state, srv.epoch_metadata.recover_checkpoint.(srv.context, state, state_epoch))
+    srv = put_in(srv.state, srv.epoch_metadata.recover_checkpoint.(srv.context, state, state_epoch, srv.role))
     srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
     srv = put_in(srv.context.strategy_dag, NodeStore.get(:dag, srv.ref, srv.idx))
     queue = if Skitter.Operation.in_ports(srv.context.operation) == [], do: [:sk_emit_epoch,{:sk_msg, :play, state_epoch}|msgs], else: msgs 
@@ -152,7 +152,7 @@ defmodule Skitter.Runtime.Worker do
   def handle_info(:sk_emit_epoch, srv) do 
     srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
     srv = update_in(srv.context._epoch, &(&1 + 1))
-    BackupStore.node_snapshot(self(), srv.role, srv.context, srv.state)
+    BackupStore.node_snapshot(self(), srv.role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, srv.state, srv.context._epoch, srv.role))
     pass_epoch(srv)
     Process.send_after(self(), :sk_emit_epoch, 2000)
     {:noreply, srv}
@@ -170,8 +170,8 @@ defmodule Skitter.Runtime.Worker do
     )
 
     mod_info = context.strategy.__info__(:functions)
-    make_checkpoint = if Keyword.get(mod_info, :make_checkpoint) == 3, do: &context.strategy.make_checkpoint/3, else: fn (_ctx, state, _epoch) -> state end
-    recover_checkpoint = if Keyword.get(mod_info, :recover_checkpoint) == 3, do: &context.strategy.recover_checkpoint/3, else: fn (_ctx, state, _epoch) -> state end
+    make_checkpoint = if Keyword.get(mod_info, :make_checkpoint) == 4, do: &context.strategy.make_checkpoint/4, else: fn (_ctx, state, _epoch, _role) -> state end
+    recover_checkpoint = if Keyword.get(mod_info, :recover_checkpoint) == 4, do: &context.strategy.recover_checkpoint/4, else: fn (_ctx, state, _epoch, _role) -> state end
 
     %__MODULE__{
       operation: context.operation,
@@ -218,10 +218,10 @@ defmodule Skitter.Runtime.Worker do
     } 
   ) do
     graph_context = context.strategy_dag
-    role_node = Map.get(graph_context.nodes, current_role).out
-    role_node |> Enum.each(fn 
+    role_node = Map.get(graph_context.nodes, current_role)
+    role_node.out |> Enum.each(fn 
       {:out} ->  Emit.emit_epoch(context, {context._epoch, graph_context.out_count})
-      role -> Map.get(graph_context, role).pids
+      role -> Map.get(graph_context.nodes, role).pids
         |> Enum.each(&GenServer.cast(&1, {:sk_epoch, {{:inner, current_role}, context._epoch, role_node.pids_len}}))
     end)
   end
@@ -261,7 +261,7 @@ defmodule Skitter.Runtime.Worker do
   } = srv) when epoch_metadata.epochs_recieved == %{} do
     srv = update_in(srv.context._epoch, &(&1 + 1))
     srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
-    BackupStore.node_snapshot(self(), role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, state, srv.context._epoch))
+    BackupStore.node_snapshot(self(), role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, state, srv.context._epoch, srv.role))
     pass_epoch(srv)
     :queue.fold(&elem(handle_cast(&1, &2),1), srv, epoch_metadata.msg_queue)
   end

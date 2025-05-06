@@ -149,6 +149,11 @@ defmodule Skitter.Runtime do
       {node, %Strategy.Context{
         operation: node.operation,
         strategy: node.strategy,
+        deployment: 
+          case tag do
+            :redeploy -> NodeStore.get(:deployment, ref, i)
+            :deploy -> nil
+          end,
         _epoch: nil,
         _skr: {tag, ref, i}
       }} end)
@@ -236,7 +241,7 @@ defmodule Skitter.Runtime do
   end
 
   defp remove_constants(ref) do
-    [:manager, :wf_nodes, :wf_node_names, :deployment, :links, :dag]
+    [:manager, :wf_nodes, :wf_node_names, :links, :dag]
     |> Enum.each(&ConstantStore.remove(&1, ref))
 
     Remote.on_all_workers(fn ->
@@ -244,7 +249,6 @@ defmodule Skitter.Runtime do
         :wf_nodes,
         :wf_node_names,
         :operation_worker_supervisors,
-        :deployment,
         :links,
         :local_supervisors,
         :dag
@@ -254,11 +258,11 @@ defmodule Skitter.Runtime do
   end
 
   defp remove_failure_constants(ref) do
-    [:failure_stores, :failure_obs]
+    [:failure_stores, :failure_obs, :deployment]
     |> Enum.each(&ConstantStore.remove(&1, ref))
 
     Remote.on_all_workers(fn ->
-      [:failure_stores, :failure_obs]
+      [:failure_stores, :failure_obs, :deployment]
       |> Enum.each(&ConstantStore.remove(&1, ref))
     end)
   end

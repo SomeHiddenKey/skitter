@@ -92,7 +92,11 @@ defmodule Skitter.Worker do
 
   def redeploy_remote(context, refs, role, distributor \\ &Reference.round_robin/1) do
     Enum.map(distributor.(refs[role]), fn {remote, refs} -> 
-      Remote.on(remote, Skitter.Runtime.Spawner, (if is_list(refs), do: :spawn_locals ,else: :spawn_local), [context, refs, role])
+      if is_list(refs) do
+        {remote, Remote.on(remote, Skitter.Runtime.Spawner, :spawn_locals, [context, refs, role])}
+      else
+        {remote, Remote.on(remote, Skitter.Runtime.Spawner, :spawn_local, [context, refs, role])}
+      end
     end) |> List.flatten
   end
 

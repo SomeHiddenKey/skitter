@@ -20,7 +20,7 @@ defmodule Skitter.Runtime.BackupStore do
 
   def init({ref, nodes}) do 
     FailureObs.put_store_pid(ref, self())
-    dbg :STARTED
+    Logger.info("Backup Store started", [deployment: ref])
     { :ok, 
       { 0, # lowest epoch
         Map.new(), # backup states 
@@ -266,11 +266,11 @@ defmodule Skitter.Runtime.BackupStore do
     {:noreply, {lowest_epoch, new_snapshot_dict, %{}, epoch_max_count}}
   end
   
-  def handle_cast(
-    {:dump}, 
-    {_, snapshot_dict, _, _} = data
-  ) do
-    dbg snapshot_dict
-    {:noreply,data}
-  end
+  # def handle_cast(
+  #   {:dump}, 
+  #   {_, snapshot_dict, _, _} = data
+  # ) do
+  #   dbg snapshot_dict
+  #   {:noreply,data}
+  # end
 end

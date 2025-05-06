@@ -23,9 +23,9 @@ defmodule Skitter.Runtime.FailureObs do
   end
 
   def init(deployment_ref) do
-    dbg :STARTED
     ConstantStore.put_everywhere(self(), :failure_obs, deployment_ref)
     unless RT.mode() == :local, do: MWC.subscribe_down()
+    Logger.info("Failure-Observer started", [deployment: deployment_ref])
     {:ok, {:uninitialized, deployment_ref, %{}, []}}
   end
 
@@ -47,7 +47,6 @@ defmodule Skitter.Runtime.FailureObs do
   end
 
   def handle_cast(:put_pid_everywhere, {:uninitialized, ref, pid_map, backup_stores}) do
-    dbg {ref, pid_map, backup_stores}
     pid_list = pid_map |> Map.to_list() |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1))
 
     if backup_stores != nil, do: NodeStore.put_everywhere(backup_stores, :failure_stores, ref)
@@ -57,26 +56,29 @@ defmodule Skitter.Runtime.FailureObs do
     |> Enum.map(fn {{ctx, dag}, pid_ctx} -> Strategy.DAG.build(ctx, dag, pid_ctx) end) 
     |> NodeStore.put_everywhere(:dag, ref)
 
+    Logger.info("Backup Store and Worker PID information updated everywhere", [deployment: ref])
+
     RT.notify_workers(ref)
     {:noreply, {:running, ref, pid_list |> Enum.count()}}
   end
 
   def handle_info({:worker_down, worker}, {:uninitialized, deployment_ref, _pid_map, _backup_stores}) do
-    dbg {:DOWN, worker}
+    Logger.alert("Remote disconnected", [remote: worker, deployment: deployment_ref])
     nodes = ConstantStore.get(:wf_nodes, deployment_ref)
     RT.stop(deployment_ref)
     Skitter.Runtime.redeploy(nodes, deployment_ref)
+    Logger.info("Workflow redeployed from latest checkpoint", [deployment: deployment_ref])
     {:noreply, {:uninitialized, deployment_ref, %{}, []}}
   end
   
   def handle_info({:worker_down, worker}, {:redeploying, refs_so_far, nodes, old_deploy_ref, count}) do
-    dbg {:DOWN, worker}
+    Logger.alert("Remote disconnected", [remote: worker, deployment: old_deploy_ref])
     if refs_so_far != %{}, do: BackupStore.fetch_refs(old_deploy_ref, self())
     {:noreply, {:redeploying, %{}, nodes, old_deploy_ref, count}}
   end # consecutive workers down
 
   def handle_info({:worker_down, worker}, {:running, deployment_ref, count}) do
-    dbg {:DOWN, worker}
+    Logger.alert("Remote disconnected", [remote: worker, deployment: deployment_ref])
     nodes = ConstantStore.get(:wf_nodes, deployment_ref)
     RT.stop_nonfailure_inst(deployment_ref)
     unless RT.mode() == :local, do: MWC.unsubscribe_down()
@@ -89,6 +91,7 @@ defmodule Skitter.Runtime.FailureObs do
 
     deployment_ref = Skitter.Runtime.redeploy(nodes, old_deploy_ref, backup_refs)
     unless RT.mode() == :local, do: MWC.subscribe_down()
+    Logger.info("Workflow redeployed from latest checkpoint", [deployment: deployment_ref])
     {:noreply, {:uninitialized, deployment_ref, %{}, nil}}
   end
 
