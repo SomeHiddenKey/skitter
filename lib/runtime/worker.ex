@@ -5,6 +5,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 defmodule Skitter.Runtime.Worker do
+  @checkpoint_delay Application.compile_env(:skitter, :checkpoint_delay, 2000)
   @moduledoc """
   This module defines a GenServer that specifies the behaviour of Skitter Workers.
 
@@ -149,12 +150,13 @@ defmodule Skitter.Runtime.Worker do
 
   def handle_cast(msg, state), do: handle_info(msg, state)
 
+  @impl true
   def handle_info(:sk_emit_epoch, srv) do 
     srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
     srv = update_in(srv.context._epoch, &(&1 + 1))
-    BackupStore.node_snapshot(self(), srv.role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, srv.state, srv.context._epoch, srv.role))
     pass_epoch(srv)
-    Process.send_after(self(), :sk_emit_epoch, 2000)
+    BackupStore.node_snapshot(self(), srv.role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, srv.state, srv.context._epoch, srv.role))
+    Process.send_after(self(), :sk_emit_epoch, @checkpoint_delay)
     {:noreply, srv}
   end
 
@@ -261,8 +263,8 @@ defmodule Skitter.Runtime.Worker do
   } = srv) when epoch_metadata.epochs_recieved == %{} do
     srv = update_in(srv.context._epoch, &(&1 + 1))
     srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
-    BackupStore.node_snapshot(self(), role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, state, srv.context._epoch, srv.role))
     pass_epoch(srv)
+    BackupStore.node_snapshot(self(), role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, state, srv.context._epoch, srv.role))
     :queue.fold(&elem(handle_cast(&1, &2),1), srv, epoch_metadata.msg_queue)
   end
  

@@ -29,6 +29,11 @@ end
 config_enabled_if_set :shutdown_with_workers, "SKITTER_SHUTDOWN_WITH_WORKERS"
 
 # Master & Local
+config_from_env :checkpoint_replicas, "SKITTER_REPLICA_COUNT", fn str ->
+  try do min(String.to_integer(str), 1) rescue _ -> raise "Recieved replica count `#{str}`, expected an integer." end
+end
+
+# Master & Local
 config_from_env :deploy, "SKITTER_DEPLOY", fn str ->
   fn ->
     case Code.eval_string(str) do

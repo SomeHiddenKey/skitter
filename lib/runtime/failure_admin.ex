@@ -8,11 +8,11 @@ defmodule Skitter.Runtime.BackupStore do
   alias Skitter.Runtime, as: RT 
   alias Skitter.Runtime.{
     NodeStore,
+    ConstantStore,
     FailureObs
   }
   require NodeStore
-  @snapshot_nodes Application.compile_env(:skitter, :ackers, 1)
-  @snapshot_replicas Application.compile_env(:skitter, :replicas, 1)
+  require ConstantStore
 
   def start_link(arg) do
     GenServer.start_link(__MODULE__, arg)
@@ -32,40 +32,46 @@ defmodule Skitter.Runtime.BackupStore do
 
   # use handle_continue() instead
   def admin_cast(pid, msg), do: GenServer.cast(pid, msg)
-  def admin_cast(ctx, ids, msg) when is_list(ids), do: Enum.map(ids, &admin_cast(ctx, &1, msg))
+  # def admin_cast(ctx, ids, msg) when is_list(ids), do: Enum.map(ids, &admin_cast(ctx, &1, msg))
   def admin_cast(%Context{_skr: {ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_stores, ref, id), msg)
   def admin_cast(%Context{_skr: {_, ref,_}}, id, msg), do: GenServer.cast(NodeStore.get(:failure_stores, ref, id), msg)
   def admin_cast(ref, id, msg), do: GenServer.cast(NodeStore.get(:failure_stores, ref, id), msg)
-  def admin_broadcast(ctx, msg), do: admin_cast(ctx, 0..(@snapshot_nodes - 1) |> Enum.to_list(), msg)
+
+  def admin_broadcast(%Context{_skr: {ref,_}}, msg), do: NodeStore.get_all(:failure_stores, ref) |> Enum.map(& GenServer.cast(&1, msg))
+  def admin_broadcast(%Context{_skr: {_, ref,_}}, msg), do: NodeStore.get_all(:failure_stores, ref) |> Enum.map(&GenServer.cast(&1, msg))
+  def admin_broadcast(ref, msg), do: NodeStore.get_all(:failure_stores, ref) |> Enum.map(&GenServer.cast(&1, msg))
   
-  def node_snapshot(pid, role, context, state) when context._epoch == 1 do
+  def node_snapshot(pid, role, context = %Context{_skr: {ref,_}}, state) do
+    {nodes_count, replica_count} = ConstantStore.get(:replica_count, ref)
+
     id = Murmur.hash_x86_128(pid)
-    replica_ids = 0..(@snapshot_replicas - 1) 
-      |> Enum.map(fn r -> rem(id + r*div(@snapshot_nodes,@snapshot_replicas), @snapshot_nodes) end)
+    replica_ids = 0..(replica_count - 1) 
+      |> Enum.map(fn r -> rem(id + r*div(nodes_count,replica_count), nodes_count) end)
       |> MapSet.new
-    0..(@snapshot_nodes - 1) 
-      |> Enum.each(fn node_id -> 
-        if MapSet.member?(replica_ids, node_id)
-        do
-          admin_cast(context, node_id, {:snapshot, pid, role, RT.node_name_for_context(context), 1, state, context.strategy_dag})
+
+    node_snapshot(pid, role, context, state, replica_ids)
+  end
+
+  def node_snapshot(pid, role, context = %Context{_skr: {ref,_}}, state, replica_ids) when context._epoch == 1 do 
+    NodeStore.get_all(:failure_stores, ref)
+      |> Enum.with_index
+      |> Enum.each(fn {node, idx} -> 
+        if MapSet.member?(replica_ids, idx) do
+          admin_cast(node, {:snapshot, pid, role, RT.node_name_for_context(context), 1, state, context.strategy_dag})
         else
-          admin_cast(context, node_id, {:snapshot, RT.node_name_for_context(context), 1, context.strategy_dag})
+          admin_cast(node, {:snapshot, RT.node_name_for_context(context), 1, context.strategy_dag})
         end
       end)
   end
 
-  def node_snapshot(pid, role, context, state) do
-    id = Murmur.hash_x86_128(pid)
-    replica_ids = 0..(@snapshot_replicas - 1) 
-      |> Enum.map(fn r -> rem(id + r*div(@snapshot_nodes,@snapshot_replicas), @snapshot_nodes) end)
-      |> MapSet.new
-    0..(@snapshot_nodes - 1) 
-      |> Enum.each(fn node_id -> 
-        if MapSet.member?(replica_ids, node_id)
-        do 
-          admin_cast(context, node_id, {:snapshot, pid, role, RT.node_name_for_context(context), context._epoch, state})
+  def node_snapshot(pid, role, context = %Context{_skr: {ref,_}}, state, replica_ids) do 
+    NodeStore.get_all(:failure_stores, ref)
+      |> Enum.with_index
+      |> Enum.each(fn {node, idx} -> 
+        if MapSet.member?(replica_ids, idx) do 
+          admin_cast(node, {:snapshot, pid, role, RT.node_name_for_context(context), context._epoch, state})
         else 
-          admin_cast(context, node_id, {:snapshot, RT.node_name_for_context(context), context._epoch}) 
+          admin_cast(node, {:snapshot, RT.node_name_for_context(context), context._epoch}) 
         end
       end)
   end

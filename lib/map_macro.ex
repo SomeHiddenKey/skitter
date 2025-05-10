@@ -48,7 +48,7 @@ defmodule MapMacro do
 
   def map(input, lvl, fun) do 
     if is_map(input) do
-      Map.new(input, fn {key, value} -> {key, MapMacro.map(value, lvl-1, fun)} end)
+      Map.new(input, fn {key, value} -> {key, __MODULE__.map(value, lvl-1, fun)} end)
     else
       fun.(input)
     end
@@ -57,7 +57,7 @@ defmodule MapMacro do
   def get_and_update(input, fun) do 
     if is_map(input) do
       new_map = input
-      |> Map.new(fn {key, value} -> {key, MapMacro.get_and_update(value, fun)} end) 
+      |> Map.new(fn {key, value} -> {key, __MODULE__.get_and_update(value, fun)} end) 
       |> Map.filter(fn 
         {_k, :pop} -> false
         _ -> true
@@ -76,9 +76,13 @@ defmodule MapMacro do
     end)
   end
 
-  def count(m) do
+  def reduce(m, start, function) do
     m 
       |> Map.values() 
-      |> Enum.reduce(0, fn x, acc -> acc + (if is_map(x), do: count(x), else: 1) end) 
+      |> Enum.reduce(start, fn x, acc -> (if is_map(x), do: reduce(x, acc, function), else: function.(x, acc)) end)
+  end
+
+  def count(m) do
+    __MODULE__.reduce(m, 0, fn _, acc -> acc + 1 end)
   end
 end

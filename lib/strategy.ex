@@ -94,7 +94,7 @@ defmodule Skitter.Strategy do
     defp in_roles(ctx, graph, role) do 
       List.flatten(for {from,to} <- graph, Enum.member?(to, role), into: [] do
         case from do
-          {:in} -> Skitter.Operation.in_ports(ctx.operation())
+          {:in} -> Skitter.Operation.in_ports(ctx.operation)
           {:out} -> throw "Out role can't refer to back to another node: Breaks DAG" 
           _ -> [{:inner, from}]
         end

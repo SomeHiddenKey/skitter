@@ -15,7 +15,6 @@ defmodule Skitter.Runtime.BackupStoreSupervisor do
   def init(_arg), do: DynamicSupervisor.init(strategy: :one_for_one)
 
   def spawn_store(ref, nodes) do
-    {:ok, pid} =
       DynamicSupervisor.start_child(
         __MODULE__,
         {BackupStore, {ref, nodes}}

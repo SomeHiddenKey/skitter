@@ -338,6 +338,11 @@ function master_start_parse() {
           $maybe_dry_run export SKITTER_DEPLOY="$2"
           shift
           ;;
+        -r|--replicas)
+          test $# -lt 2 && argerr "master" "Missing value for optional argument '--replicas'."
+          $maybe_dry_run export SKITTER_REPLICA_COUNT="$2"
+          shift
+          ;;
         -c|--cookie)
           test $# -lt 2 && argerr "master" "Missing value for optional argument '--cookie'."
           $maybe_dry_run export RELEASE_COOKIE="$2"
@@ -374,6 +379,11 @@ function local_start_parse() {
         -d|--deploy)
           test $# -lt 2 && argerr "local" "Missing value for optional argument '--deploy'."
           $maybe_dry_run export SKITTER_DEPLOY="$2"
+          shift
+          ;;
+        -r|--replicas)
+          test $# -lt 2 && argerr "master" "Missing value for optional argument '--replicas'."
+          $maybe_dry_run export SKITTER_REPLICA_COUNT="$2"
           shift
           ;;
         --no-log)

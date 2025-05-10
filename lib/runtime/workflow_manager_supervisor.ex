@@ -5,17 +5,11 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0
 
 defmodule Skitter.Runtime.WorkflowManagerSupervisor do
-  @snapshot_nodes Application.compile_env(:skitter, :ackers, 1)
-  @snapshot_replicas Application.compile_env(:skitter, :replicas, 1)
   @moduledoc false
   # Supervisor which supervises workflow managers.
 
   use DynamicSupervisor
-  alias Skitter.Runtime.{
-    WorkflowManager,
-    BackupStore,
-    FailureObs
-  }
+  alias Skitter.Runtime.WorkflowManager
 
   def start_link(arg), do: DynamicSupervisor.start_link(__MODULE__, arg, name: __MODULE__)
 
