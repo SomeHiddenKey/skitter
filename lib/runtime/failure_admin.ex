@@ -13,13 +13,14 @@ defmodule Skitter.Runtime.BackupStore do
   }
   require NodeStore
   require ConstantStore
+  @backup_mode Application.compile_env(:skitter, :backup_mode, "sync")
 
   def start_link(arg) do
     GenServer.start_link(__MODULE__, arg)
   end
 
   def init({ref, nodes}) do 
-    FailureObs.put_store_pid(ref, self())
+    FailureObs.put_store_pid(ref, self(), Node.self())
     Logger.info("Backup Store started", [deployment: ref])
     { :ok, 
       { 0, # lowest epoch
@@ -41,44 +42,73 @@ defmodule Skitter.Runtime.BackupStore do
   def admin_broadcast(%Context{_skr: {_, ref,_}}, msg), do: NodeStore.get_all(:failure_stores, ref) |> Enum.map(&GenServer.cast(&1, msg))
   def admin_broadcast(ref, msg), do: NodeStore.get_all(:failure_stores, ref) |> Enum.map(&GenServer.cast(&1, msg))
   
-  def node_snapshot(pid, role, context = %Context{_skr: {ref,_}}, state) do
-    {nodes_count, replica_count} = ConstantStore.get(:replica_count, ref)
-
-    id = Murmur.hash_x86_128(pid)
-    replica_ids = 0..(replica_count - 1) 
-      |> Enum.map(fn r -> rem(id + r*div(nodes_count,replica_count), nodes_count) end)
-      |> MapSet.new
-
-    node_snapshot(pid, role, context, state, replica_ids)
+  def start_backup(pid, role, context = %Context{_skr: {ref,_}}, state) do
+    node_idx = ConstantStore.get(:node, ref)
+    case @backup_mode do
+      "sync" -> sync_snapshot(pid, role, context, node_idx, state)
+      "async" -> spawn(fn -> __MODULE__.sync_snapshot(pid, role, context, node_idx, state) end)
+      "masterslave" -> masterslave_snapshot(pid, role, context, node_idx, state)
+      mode -> raise "unknown backup_mode `#{mode}`, expected one of [sync,async,masterslave]"
+    end
   end
 
-  def node_snapshot(pid, role, context = %Context{_skr: {ref,_}}, state, replica_ids) when context._epoch == 1 do 
+  # def replicate_racksplit({nodes_count, replica_count}, pid, node_idx) do
+  #   id = Murmur.hash_x86_128(pid)
+  #   0..(replica_count - 1)
+  #   |> Enum.map(fn r -> 
+  #     idx = rem(id + r*div(nodes_count,replica_count), nodes_count-1)
+  #     if idx >= node_idx, do: idx+1, else: idx
+  #   end)
+
+  def replicate_range({1, _}, _, _) do
+    MapSet.new
+  end
+  
+  def replicate_range({nodes_count, replica_count}, pid, node_idx) do
+    id = Murmur.hash_x86_128(pid)
+    0..(replica_count - 1)
+    |> Enum.map(fn r -> 
+      idx = rem(id + r, nodes_count-1)
+      if idx >= node_idx, do: idx+1, else: idx 
+    end)	
+    |> MapSet.new
+  end
+
+  def masterslave_snapshot(pid, role, context = %Context{_skr: {ref,_}, _epoch: 1}, node_idx, state) do   
+    admin_cast(NodeStore.get(:failure_stores, ref, node_idx), {:masterslave, node_idx, ref, {pid, role, RT.node_name_for_context(context), 1, state, context.strategy_dag}})
+  end
+
+  def masterslave_snapshot(pid, role, context = %Context{_skr: {ref,_}}, node_idx, state) do   
+    admin_cast(NodeStore.get(:failure_stores, ref, node_idx), {:masterslave, node_idx, ref, {pid, role, RT.node_name_for_context(context), context._epoch, state}})
+  end
+
+  def sync_snapshot(pid, role, context = %Context{_skr: {ref,_}, _epoch: 1}, node_idx, state) do 
+    replica_ids_set = replicate_range(ConstantStore.get(:replica_count, ref), pid, node_idx)
     NodeStore.get_all(:failure_stores, ref)
       |> Enum.with_index
       |> Enum.each(fn {node, idx} -> 
-        if MapSet.member?(replica_ids, idx) do
-          admin_cast(node, {:snapshot, pid, role, RT.node_name_for_context(context), 1, state, context.strategy_dag})
+        if MapSet.member?(replica_ids_set, idx) do
+          admin_cast(node, {:snapshot, {pid, role, RT.node_name_for_context(context), 1, state, context.strategy_dag}})
         else
-          admin_cast(node, {:snapshot, RT.node_name_for_context(context), 1, context.strategy_dag})
+          admin_cast(node, {:snapshot, {RT.node_name_for_context(context), 1, context.strategy_dag}})
         end
       end)
   end
 
-  def node_snapshot(pid, role, context = %Context{_skr: {ref,_}}, state, replica_ids) do 
+  def sync_snapshot(pid, role, context = %Context{_skr: {ref,_}}, node_idx, state) do 
+    replica_ids_set = replicate_range(ConstantStore.get(:replica_count, ref), pid, node_idx)
     NodeStore.get_all(:failure_stores, ref)
       |> Enum.with_index
       |> Enum.each(fn {node, idx} -> 
-        if MapSet.member?(replica_ids, idx) do 
-          admin_cast(node, {:snapshot, pid, role, RT.node_name_for_context(context), context._epoch, state})
+        if MapSet.member?(replica_ids_set, idx) do 
+          admin_cast(node, {:snapshot, {pid, role, RT.node_name_for_context(context), context._epoch, state}})
         else 
-          admin_cast(node, {:snapshot, RT.node_name_for_context(context), context._epoch}) 
+          admin_cast(node, {:snapshot, {RT.node_name_for_context(context), context._epoch}}) 
         end
       end)
   end
   
   def fetch_refs(depl_ref, fetcher), do: admin_broadcast(depl_ref, {:fetch_refs, fetcher})
-
-  def dump(depl_ref), do: admin_broadcast(depl_ref, {:dump})
 
   def fetch_backup(context, %__MODULE__.Reference{worker_pid: ref, store_pid: store_pid}, role), do: admin_cast(store_pid, {:fetch_backup, ref, role, RT.node_name_for_context(context), self()})
 
@@ -143,7 +173,6 @@ defmodule Skitter.Runtime.BackupStore do
     MapMacro.get_and_update(snapshot_dict, &drop_while(&1, epoch_tick - 1))
   end
 
-  # def drop_while(q, epoch) do if (elem(:queue.get(q), 0) <= epoch), do: drop_while(:queue.drop(q), epoch), else: q end
   def drop_while(q, epoch) do 
     cond do
       :queue.is_empty(q) -> :pop
@@ -219,32 +248,60 @@ defmodule Skitter.Runtime.BackupStore do
     {lowest_epoch, snapshot_dict, new_epoch_recv_count, epoch_max_count}
   end
 
-  def handle_cast({:snapshot, pid, role, operation_n, 1, snapshot_state, deployment}, state) do
+  def handle_cast({:snapshot, {pid, role, operation_n, 1, snapshot_state, deployment}}, state) do
     {:noreply, check_drop_epoch(
       1,
       new_snapshot({pid, role, operation_n, 1, snapshot_state, deployment}, state)
     )}
   end
 
-  def handle_cast({:snapshot, operation_n, 1, deployment}, state) do
+  def handle_cast({:snapshot, {operation_n, 1, deployment}}, state) do
     {:noreply, check_drop_epoch(
       1,
       update_undeployed_ops({operation_n, deployment}, state)
     )}
   end
 
-  def handle_cast({:snapshot, pid, role, operation_n, epoch_tick, snapshot_state}, state) do
+  def handle_cast({:snapshot, {pid, role, operation_n, epoch_tick, snapshot_state}}, state) do
     {:noreply, check_drop_epoch(
       epoch_tick,
       new_snapshot({pid, role, operation_n, epoch_tick, snapshot_state}, state)
     )}
   end
 
-  def handle_cast({:snapshot, _operation_n, epoch}, state) do
+  def handle_cast({:snapshot, {_operation_n, epoch}}, state) do
     {:noreply, check_drop_epoch(
       epoch,
       update_counter(epoch, state)
     )}
+  end
+
+  def handle_cast({:masterslave, node_idx, ref, {pid, role, opn, 1, backup_state, dag}}, state) do
+    replica_ids_set = replicate_range(ConstantStore.get(:replica_count, ref), pid, node_idx)
+    NodeStore.get_all(:failure_stores, ref)
+      |> Enum.with_index
+      |> Enum.each(fn {node, idx} -> 
+        cond do 
+          node == self() -> nil
+          MapSet.member?(replica_ids_set, idx) -> admin_cast(node, {:snapshot, {pid, role, opn, 1, backup_state, dag}})
+          true -> admin_cast(node, {:snapshot, {opn, 1, dag}})
+        end
+      end)
+    handle_cast({:snapshot, {pid, role, opn, 1, backup_state, dag}}, state)
+  end
+
+  def handle_cast({:masterslave, node_idx, ref, {pid, role, opn, epoch, backup_state}}, state) do
+    replica_ids_set = replicate_range(ConstantStore.get(:replica_count, ref), pid, node_idx)
+    NodeStore.get_all(:failure_stores, ref)
+      |> Enum.with_index
+      |> Enum.each(fn {node, idx} -> 
+        cond do 
+          node == self() -> nil
+          MapSet.member?(replica_ids_set, idx) -> admin_cast(node, {:snapshot, {pid, role, opn, epoch, backup_state}})
+          true -> admin_cast(node, {:snapshot, {opn, epoch}})
+        end
+      end)
+    handle_cast({:snapshot, {pid, role, opn, epoch, backup_state}}, state)
   end
 
   def handle_cast(
@@ -271,12 +328,4 @@ defmodule Skitter.Runtime.BackupStore do
     
     {:noreply, {lowest_epoch, new_snapshot_dict, %{}, epoch_max_count}}
   end
-  
-  # def handle_cast(
-  #   {:dump}, 
-  #   {_, snapshot_dict, _, _} = data
-  # ) do
-  #   dbg snapshot_dict
-  #   {:noreply,data}
-  # end
 end

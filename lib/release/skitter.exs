@@ -29,8 +29,27 @@ end
 config_enabled_if_set :shutdown_with_workers, "SKITTER_SHUTDOWN_WITH_WORKERS"
 
 # Master & Local
-config_from_env :checkpoint_replicas, "SKITTER_REPLICA_COUNT", fn str ->
-  try do min(String.to_integer(str), 1) rescue _ -> raise "Recieved replica count `#{str}`, expected an integer." end
+config_from_env :backup_replicas, "SKITTER_BACKUP_COUNT", fn str ->
+  try do 
+    n = String.to_integer(str)
+    if (n<1), do: raise "Recieved replica count `#{str}`, expected a positive integer.", else: n
+  rescue _ -> raise "Recieved replica count `#{str}`, expected a positive integer." end
+end
+
+# Master & Local
+config_from_env :backup_interval, "SKITTER_BACKUP_INTERVAL", fn str ->
+  try do 
+    n = String.to_integer(str)
+    if (n<1), do: raise "Recieved backup interval `#{str}`, expected a positive integer (expressed as milliseconds).", else: n
+  rescue _ -> raise "Recieved backup interval `#{str}`, expected a positive integer (expressed as milliseconds)." end
+end
+
+# Master & Local
+config_from_env :backup_mode, "SKITTER_BACKUP_MODE", fn 
+  "sync" -> "sync"
+  "async" -> "async"
+  "masterslave" -> "masterslave"
+  mode -> raise "unknown backup_mode `#{mode}`, expected one of [sync,async,masterslave]"
 end
 
 # Master & Local

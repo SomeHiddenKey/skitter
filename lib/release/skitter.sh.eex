@@ -62,6 +62,9 @@ function deploy_usage() {
   printf '\t\t\t\t%s\n'                          "contains a single worker address."
   printf '\t%s\t\t%s\n'   "-q, --quiet"          "Do not show status when deploying"
   opt_deploy
+  opt_backup_replicas
+  opt_backup_mode
+  opt_backup_interval
   printf '\t%s\t\t%s\n' "-m, --mode MODE"        "The mode used to start the master runtime."
   printf '\t\t\t\t%s\n'                          "MODE should be one of start, start_iex,"
   printf '\t\t\t\t%s\n'                          "daemon, daemon_iex. Defaults to start."
@@ -101,6 +104,9 @@ function local_usage() {
   runtime_usage "local"
   opt_header
   opt_deploy
+  opt_backup_replicas
+  opt_backup_mode
+  opt_backup_interval
   opt_no_log
 }
 
@@ -136,6 +142,9 @@ function master_usage() {
   runtime_usage "master"
   opt_header
   opt_deploy
+  opt_backup_replicas
+  opt_backup_mode
+  opt_backup_interval
   opt_name
   opt_cookie
   opt_no_log
@@ -176,6 +185,20 @@ function opt_cookie() {
 
 function opt_name() {
   printf '\t%s\t\t%s\n' "-n, --name NAME"     "Set the name of the node."
+}
+
+function opt_backup_replicas() {
+  printf '\t%s\n'       "-br, --backup-replicas NUMBER"     
+  printf '\t\t\t\t%s\n'                        "Set the amount of replica backups the system needs to make"
+}
+
+function opt_backup_mode() {
+  printf '\t%s\t%s\n' "-bm, --backup-mode MODE"     "Set the replica mode between 'sync', 'async' and 'masterslave'"
+}
+
+function opt_backup_interval() {
+  printf '\t%s\n'       "-bi, --backup-interval NUMBER"     
+  printf '\t\t\t\t%s\n'                        "Set interval in milliseconds between starting to take a backup"
 }
 
 function opt_deploy() {
@@ -338,9 +361,19 @@ function master_start_parse() {
           $maybe_dry_run export SKITTER_DEPLOY="$2"
           shift
           ;;
-        -r|--replicas)
-          test $# -lt 2 && argerr "master" "Missing value for optional argument '--replicas'."
-          $maybe_dry_run export SKITTER_REPLICA_COUNT="$2"
+        -br|--backup-replicas)
+          test $# -lt 2 && argerr "master" "Missing value for optional argument '--backup-replicas'."
+          $maybe_dry_run export SKITTER_BACKUP_COUNT="$2"
+          shift
+          ;;
+        -bm|--backup-mode)
+          test $# -lt 2 && argerr "master" "Missing value for optional argument '--backup-mode'."
+          $maybe_dry_run export SKITTER_BACKUP_MODE="$2"
+          shift
+          ;;
+        -bi|--backup-interval)
+          test $# -lt 2 && argerr "master" "Missing value for optional argument '--backup-interval'."
+          $maybe_dry_run export SKITTER_BACKUP_INTERVAL="$2"
           shift
           ;;
         -c|--cookie)
@@ -381,9 +414,19 @@ function local_start_parse() {
           $maybe_dry_run export SKITTER_DEPLOY="$2"
           shift
           ;;
-        -r|--replicas)
-          test $# -lt 2 && argerr "master" "Missing value for optional argument '--replicas'."
-          $maybe_dry_run export SKITTER_REPLICA_COUNT="$2"
+        -br|--backup-replicas)
+          test $# -lt 2 && argerr "master" "Missing value for optional argument '--backup-replicas'."
+          $maybe_dry_run export SKITTER_BACKUP_COUNT="$2"
+          shift
+          ;;
+        -bm|--backup-mode)
+          test $# -lt 2 && argerr "master" "Missing value for optional argument '--backup-mode'."
+          $maybe_dry_run export SKITTER_BACKUP_MODE="$2"
+          shift
+          ;;
+        -bi|--backup-interval)
+          test $# -lt 2 && argerr "master" "Missing value for optional argument '--backup-interval'."
+          $maybe_dry_run export SKITTER_BACKUP_INTERVAL="$2"
           shift
           ;;
         --no-log)
@@ -534,6 +577,21 @@ function do_deploy() {
         -d|--deploy)
           test $# -lt 2 && argerr "deploy" "Missing value for optional argument '--deploy'."
           master_opts="$master_opts --deploy $2"
+          shift
+          ;;
+        -br|--backup-replicas)
+          test $# -lt 2 && argerr "deploy" "Missing value for optional argument '--backup-replicas'."
+          master_opts="$master_opts --backup-replicas $2"
+          shift
+          ;;
+        -bm|--backup-mode)
+          test $# -lt 2 && argerr "deploy" "Missing value for optional argument '--backup-mode'."
+          master_opts="$master_opts --backup-mode $2"
+          shift
+          ;;
+        -bi|--backup-interval)
+          test $# -lt 2 && argerr "deploy" "Missing value for optional argument '--backup-interval'."
+          master_opts="$master_opts --backup-interval $2"
           shift
           ;;
         -m|--mode)
