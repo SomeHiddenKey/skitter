@@ -5,7 +5,6 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 defmodule Skitter.Runtime.Worker do
-  @checkpoint_delay Application.compile_env(:skitter, :backup_interval, 2000)
   @moduledoc """
   This module defines a GenServer that specifies the behaviour of Skitter Workers.
 
@@ -41,6 +40,7 @@ defmodule Skitter.Runtime.Worker do
     BackupStore,
     Emit
   }
+  alias Skitter.Config
   require Skitter.Runtime.NodeStore
   require Skitter.Runtime.ConstantStore
 
@@ -138,12 +138,12 @@ defmodule Skitter.Runtime.Worker do
     srv = put_in(srv.state, srv.epoch_metadata.recover_checkpoint.(srv.context, state, state_epoch, srv.role))
     srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
     srv = put_in(srv.context.strategy_dag, NodeStore.get(:dag, srv.ref, srv.idx))
-    queue = if Skitter.Operation.in_ports(srv.context.operation) == [], do: [:sk_emit_epoch,{:sk_msg, :play, state_epoch}|msgs], else: msgs 
+    queue = if Skitter.Operation.in_ports(srv.context.operation) == [], do: [:sk_start|msgs], else: msgs 
     {:noreply, queue |> Enum.reverse() |> Enum.reduce(srv, &elem(handle_cast(&1, &2),1))}
   end
 
   def handle_cast(:sk_start, srv) do 
-    {:noreply, [:sk_emit_epoch, {:sk_msg, :play, srv.context._epoch + 1}] |> Enum.reduce(srv, &elem(handle_cast(&1, &2), 1))}
+    {:noreply, [{:sk_emit_epoch, Config.get(:backup_interval, 2000)}, {:sk_msg, :play, srv.context._epoch + 1}] |> Enum.reduce(srv, &elem(handle_cast(&1, &2), 1))}
   end
   
   def handle_cast(:sk_stop, state), do: {:stop, :normal, state}
@@ -151,12 +151,12 @@ defmodule Skitter.Runtime.Worker do
   def handle_cast(msg, state), do: handle_info(msg, state)
 
   @impl true
-  def handle_info(:sk_emit_epoch, srv) do 
+  def handle_info({:sk_emit_epoch, checkpoint_delay}, srv) do 
     srv = put_in(srv.epoch_metadata, __MODULE__.EpochMetadata.new(srv))
     srv = update_in(srv.context._epoch, &(&1 + 1))
     pass_epoch(srv)
     BackupStore.start_backup(self(), srv.role, srv.context, srv.epoch_metadata.make_checkpoint.(srv.context, srv.state, srv.context._epoch, srv.role))
-    Process.send_after(self(), :sk_emit_epoch, @checkpoint_delay)
+    Process.send_after(self(), {:sk_emit_epoch, checkpoint_delay}, checkpoint_delay)
     {:noreply, srv}
   end
 

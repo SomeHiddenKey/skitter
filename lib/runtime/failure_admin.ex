@@ -11,9 +11,9 @@ defmodule Skitter.Runtime.BackupStore do
     ConstantStore,
     FailureObs
   }
+  alias Skitter.Config
   require NodeStore
   require ConstantStore
-  @backup_mode Application.compile_env(:skitter, :backup_mode, "sync")
 
   def start_link(arg) do
     GenServer.start_link(__MODULE__, arg)
@@ -44,7 +44,7 @@ defmodule Skitter.Runtime.BackupStore do
   
   def start_backup(pid, role, context = %Context{_skr: {ref,_}}, state) do
     node_idx = ConstantStore.get(:node, ref)
-    case @backup_mode do
+    case Config.get(:backup_mode, "sync") do
       "sync" -> sync_snapshot(pid, role, context, node_idx, state)
       "async" -> spawn(fn -> __MODULE__.sync_snapshot(pid, role, context, node_idx, state) end)
       "masterslave" -> masterslave_snapshot(pid, role, context, node_idx, state)

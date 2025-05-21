@@ -32,7 +32,7 @@ config_enabled_if_set :shutdown_with_workers, "SKITTER_SHUTDOWN_WITH_WORKERS"
 config_from_env :backup_replicas, "SKITTER_BACKUP_COUNT", fn str ->
   try do 
     n = String.to_integer(str)
-    if (n<1), do: raise "Recieved replica count `#{str}`, expected a positive integer.", else: n
+    if (n<1) do raise "Recieved replica count `#{str}`, expected a positive integer." else n end
   rescue _ -> raise "Recieved replica count `#{str}`, expected a positive integer." end
 end
 
@@ -40,7 +40,7 @@ end
 config_from_env :backup_interval, "SKITTER_BACKUP_INTERVAL", fn str ->
   try do 
     n = String.to_integer(str)
-    if (n<1), do: raise "Recieved backup interval `#{str}`, expected a positive integer (expressed as milliseconds).", else: n
+    if (n<1) do raise "Recieved backup interval `#{str}`, expected a positive integer (expressed as milliseconds)." else n end
   rescue _ -> raise "Recieved backup interval `#{str}`, expected a positive integer (expressed as milliseconds)." end
 end
 
